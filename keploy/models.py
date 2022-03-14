@@ -1,7 +1,5 @@
 
-from typing import Any, List, Literal, Optional
-from collections.abc import Mapping, Sequence
-
+from typing import Any, Iterable, List, Literal, Optional, Mapping, Sequence
 
 class FilterConfig(object):
 	def __init__(self, regex: str) -> None:
@@ -30,15 +28,6 @@ class Config(object):
         self.server = serverConfig
 
 
-class TestCaseRequest(object):
-    def __init__(self, captured:int, appID:str, uri:str, request:Any, response:Any) -> None:
-        self.captured = captured
-        self.appId = appID
-        self.uri = uri
-        self.httpRequest = request
-        self.httpResponse = response
-
-
 TYPES: Literal['NO_SQL_DB', 'SQL_DB', 'GRPC', 'HTTP_CLIENT']
 class Dependency(object):
     def __init__(self, name:str, type:TYPES, metadata:Mapping[str, str], data:List[List[bytearray]] ) -> None:
@@ -46,13 +35,6 @@ class Dependency(object):
         self.type = type
         self.meta = metadata
         self.data = data
-
-
-class HttpResp(object):
-    def __init__(self, code:int, header:Mapping[str, Sequence[str]], body:str ) -> None:
-        self.code = code
-        self.header = header
-        self.body = body
 
 
 METHODS = Literal['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'TRACE']
@@ -65,3 +47,48 @@ class HttpReq(object):
 		self.urlParams = params
 		self.header = header
 		self.body = body
+
+
+class HttpResp(object):
+    def __init__(self, code:int, header:Mapping[str, Sequence[str]], body:str ) -> None:
+        self.code = code
+        self.header = header
+        self.body = body
+
+
+class TestCase(object):
+	def __init__(self, id:str, created:Optional[int], updated:Optional[int], captured:Optional[int],
+				 cid:Optional[str], appid:Optional[str], uri:Optional[str], req:Optional[HttpReq],
+				 res: Optional[HttpResp], deps:Optional[Sequence[Dependency]], keys:Optional[Mapping[str, Sequence[str]]],
+				 anchor:Optional[Mapping[str, Sequence[str]]], noise:Optional[Sequence[str]]) -> None:
+		self.id = id
+		self.created = created
+		self.updated = updated
+		self.captured = captured
+		self.c_id = cid
+		self.app_id = appid
+		self.uri = uri
+		self.http_req = req
+		self.http_resp = res
+		self.deps = deps
+		self.all_keys = keys
+		self.anchors = anchor
+		self.noise = noise
+
+
+class TestCaseRequest(object):
+	def __init__(self, captured:int, appid:str, uri:str, request:HttpReq, response:HttpResp, deps:Iterable[Dependency]) -> None:
+		self.captured = captured
+		self.app_id = appid
+		self.uri = uri
+		self.httpRequest = request
+		self.httpResponse = response
+		self.deps = deps
+
+
+class TestReq(object):
+	def __init__(self, id:str, appid:str, runid:Optional[str], resp:HttpResp) -> None:
+		self.id = id
+		self.app_id = appid
+		self.run_id = runid
+		self.resp = resp
