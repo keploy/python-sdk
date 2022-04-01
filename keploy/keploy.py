@@ -4,6 +4,8 @@ import http.client
 import re
 import time
 from typing import Iterable, List, Mapping, Optional, Sequence
+from keploy.mode import mode
+from keploy.constants import MODE_TEST, USE_HTTPS
 
 from keploy.models import Config, Dependency, HttpResp, TestCase, TestCaseRequest, TestReq
 
@@ -11,6 +13,9 @@ from keploy.models import Config, Dependency, HttpResp, TestCase, TestCaseReques
 class Keploy(object):
     
     def __init__(self, conf:Config) -> None:
+
+        if not isinstance(conf, Config):
+            raise TypeError("Please provide a valid keploy configuration.")
         
         logger = logging.getLogger('keploy')
         logger.setLevel(logging.DEBUG)
@@ -19,182 +24,240 @@ class Keploy(object):
         self._logger = logger
         self._dependencies:Mapping[str, List[Dependency]] = {}
         self._responses:Mapping[str, HttpResp] = {}
-        self._client = http.client.HTTPConnection(host=self._config.server.url, port=self._config.server.port)
+        self._client = None
+
+        if self._config.server.protocol == USE_HTTPS:
+            self._client =  http.client.HTTPSConnection(host=self._config.server.url, port=self._config.server.port)
+        else:
+            self._client = http.client.HTTPConnection(host=self._config.server.url, port=self._config.server.port)
+
+        self._client.connect()
+
+        if mode == MODE_TEST:
+            self.test()
     
     
     def get_dependencies(self, id: str) -> Optional[Iterable[Dependency]]:
         return self._dependencies.get(id, None)
 
     
-    def get_resp(self, id: str) -> Optional[HttpResp]:
-        return self._responses.get(id, None)
+    def get_resp(self, t_id: str) -> Optional[HttpResp]:
+        return self._responses.get(t_id, None)
     
     
-    def put_resp(self, id:str, resp: HttpResp) -> None:
-        self._responses[id] = resp
+    def put_resp(self, t_id:str, resp: HttpResp) -> None:
+        self._responses[t_id] = resp
   
     
     def capture(self, request:TestCaseRequest):
         self.put(request)
 
 
-    def start(self, total:int) -> str:
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        self._client.request("GET", "/regression/start?app={}&total={}".format(self._config.app.name, total), None, headers)
-        
-        response = self._client.getresponse()
-        if response.status != 200:
-            self._logger.error("failed to perform start operation.")
-            return ""
-        
-        body = json.loads(response.read().decode())
-        if body.get('id', None):
-            return body['id']
+    def start(self, total:int) -> Optional[str]:
+        try:
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            self._client.request("GET", "/{}/regression/start?app={}&total={}".format(self._config.server.suffix, self._config.app.name, total), None, headers)
+            
+            response = self._client.getresponse()
+            if response.status != 200:
+                self._logger.error("Error occured while fetching start information. Please try again.")
+                return
+            
+            body = json.loads(response.read().decode())
+            if body.get('id', None):
+                return body['id']
 
-        return ""
+            self._logger.error("failed to start operation.")
+            return
+        except:
+            self._logger.error("Exception occured while starting the test case run.")
 
 
     def end(self, id:str, status:bool) -> None:
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        self._client.request("GET", "/regression/end?id={}&status={}".format(id, status), None, headers)
-        
-        response = self._client.getresponse()
-        if response.status != 200:
-            self._logger.error("failed to perform end operation.")
-        
-        return
+        try:
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            self._client.request("GET", "/{}/regression/end?id={}&status={}".format(self._config.server.suffix, id, status), None, headers)
+            
+            response = self._client.getresponse()
+            if response.status != 200:
+                self._logger.error("failed to perform end operation.")
+            
+            return
+        except:
+            self._logger.error("Exception occured while ending the test run.")
 
 
     def put(self, rq: TestCaseRequest):
-        filters = self._config.app.filter
-        match = re.search(filters.urlRegex, rq.uri)
-        if match:
-            return None
+        try:
+            filters = self._config.app.filters
+            if filters:
+                match = re.search(filters.urlRegex, rq.uri)
+                if match:
+                    return None
 
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        bytes_data = json.dumps(rq).encode()
-        self._client.request("POST", "/regression/testcase", bytes_data, headers)
-        
-        response = self._client.getresponse()
-        if response.status != 200:
-            self._logger.error("failed to send testcase to backend")
-        
-        body = json.loads(response.read().decode())
-        if body.get('id', None):
-            self.denoise(body['id'], rq)
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            bytes_data = json.dumps(rq.__dict__).encode()
+            self._client.request("POST", "/{}/regression/testcase".format(self._config.server.suffix), bytes_data, headers)
+            
+            response = self._client.getresponse()
+            if response.status != 200:
+                self._logger.error("failed to send testcase to backend")
+            
+            body = json.loads(response.read().decode())
+            if body.get('id', None):
+                self.denoise(body['id'], rq)
+        except:
+            self._logger.error("Exception occured while storing the request information. Try again.")
 
     
     def denoise(self, id:str, tcase:TestCaseRequest):
         time.sleep(2.0)
-        unit = TestCase(id, captured=tcase.captured, uri=tcase.uri, req=tcase.httpRequest, deps=tcase.deps)
-        res = self.simulate(unit)
-        if not res:
-            self._logger.error("failed to simulate request")
-            return
-        
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        bin_data = json.dumps(TestReq(id=id, appid=self._config.app.name, runid=None, resp=res)).encode()
-        self._client.request("POST", "/regression/denoise", bin_data, headers)
-        
-        response = self._client.getresponse()
-        if response.status != 200:
-            self._logger.error("failed to de-noise request to backend")
+        try:
+            unit = TestCase(id, captured=tcase.captured, uri=tcase.uri, req=tcase.httpRequest, deps=tcase.deps)
+            res = self.simulate(unit)
+            if not res:
+                self._logger.error("failed to simulate request")
+                return
+            
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            bin_data = json.dumps(TestReq(id=id, app_id=self._config.app.name, resp=res).__dict__).encode()
+            self._client.request("POST", "/{}/regression/denoise".format(self._config.server.suffix), bin_data, headers)
+            
+            response = self._client.getresponse()
+            if response.status != 200:
+                self._logger.error("failed to de-noise request to backend")
+        except:
+            self._logger.error("Error occured while denoising the test case request. Skipping...")
 
     
     def simulate(self, test_case:TestCase) -> Optional[HttpResp]:
-        self._dependencies[test_case.id] = test_case.deps
-        
-        heads = test_case.http_req.header
-        heads['KEPLOY_TEST_ID'] = test_case.id
-        cli = http.client.HTTPConnection()
-        cli._http_vsn_str = 'HTTP/{}.{}'.format(test_case.http_req.protoMajor, test_case.http_req.protoMinor)
-        cli.request(
-            method=test_case.http_req.method,
-            url="http://" + self._config.app.host + ":" + self._config.app.port + test_case.http_req.url,
-            body=json.dumps(test_case.http_req.body).encode(),
-            headers=heads
-        )
+        try:
+            self._dependencies[test_case.id] = test_case.deps
+            
+            heads = test_case.http_req.header
+            heads['KEPLOY_TEST_ID'] = test_case.id
+            
+            cli = http.client.HTTPConnection(self._config.app.host, self._config.app.port)
+            cli._http_vsn = int(str(test_case.http_req.proto_major) + str(test_case.http_req.proto_minor))
+            cli._http_vsn_str = 'HTTP/{}.{}'.format(test_case.http_req.proto_major, test_case.http_req.proto_minor)
+                        
+            cli.request(
+                method=test_case.http_req.method,
+                url=self._config.app.suffix + test_case.http_req.url,
+                body=json.dumps(test_case.http_req.body).encode(),
+                headers=heads
+            )
 
-        response = self.get_resp(test_case.id)
-        if not response or response.pop(test_case.id, None):
-            self._logger.error("failed loading the response for testcase.")
-            return
+            response = self.get_resp(test_case.id)
+            if not response or not self._responses.pop(test_case.id, None):
+                self._logger.error("failed loading the response for testcase.")
+                return
 
-        self._dependencies.pop(test_case.id, None)
-        cli.close()
+            self._dependencies.pop(test_case.id, None)
+            cli.close()
+            
+            return response
         
-        return response
+        except  Exception as e:
+            self._logger.exception("Exception occured in simulation of test case with id: %s" %test_case.id)
         
 
     def check(self, r_id:str, tc: TestCase) -> bool:
-        resp = self.simulate(tc)
-        if not resp:
-            self._logger.error("failed to simulate request on local server")
-            return False
-        
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        bytes_data = json.dumps(TestReq(id=tc.id, appid=self._config.app.name, runid=r_id, resp=resp)).encode()
-        self._client.request("POST", "/regression/test", bytes_data, headers)
-        
-        response = self._client.getresponse()
-        if response.status != 200:
-            self._logger.error("failed to de-noise request to backend")
-
-        body = json.loads(response.read().decode())
-        if body.get('pass', False):
-            return body['pass']
-        
-        return False
-    
-    
-    def get(self, id:str) -> Optional[TestCase]:
-        
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        self._client.request("GET", "/egression/testcase/{}".format(id), None, headers)
-        
-        response = self._client.getresponse()
-        if response.status != 200:
-            self._logger.error("failed to get request.")
-
-        body = json.loads(response.read().decode())
-        unit = TestCase(**body)
-        
-        return unit
-
-
-    def fetch(self, offset:int=0, limit:int=25) -> Optional[Sequence[TestCase]]:
-        test_cases = []
-        headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-        
-        while True:
+        try:
+            resp = self.simulate(tc)
+            if not resp:
+                self._logger.error("failed to simulate request on local server.")
+                return False
             
-            self._client.request("GET", "/regression/testcase?app={}&offset={}&limit={}".format(self._config.app.name, offset, limit), None, headers)
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            bytes_data = json.dumps(TestReq(id=tc.id, app_id=self._config.app.name, run_id=r_id, resp=resp).__dict__).encode()
+            self._client.request("POST", "/{}/regression/test".format(self._config.server.suffix), bytes_data, headers)
+            
+            response = self._client.getresponse()
+            if response.status != 200:
+                self._logger.error("failed to read response from backend")
+
+            body = json.loads(response.read().decode())
+            if body.get('pass', False):
+                return body['pass']
+            
+            return False
+
+        except:
+            self._logger.exception("[SKIP] Failed to check testcase with id: %s" %tc.id)
+            return False
+    
+
+    def get(self, id:str) -> Optional[TestCase]:
+        try:
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            self._client.request("GET", "/{}/regression/testcase/{}".format(self._config.server.suffix, id), None, headers)
+            
             response = self._client.getresponse()
             if response.status != 200:
                 self._logger.error("failed to get request.")
 
             body = json.loads(response.read().decode())
-            if body:
-                test_cases.append(body)
-            else:
-                break
+            unit = TestCase(**body)
         
-        return test_cases
+            return unit
+        
+        except:
+            self._logger.error("Exception occured while fetching the test case with id: %s" %id)
+            return
+
+
+    def fetch(self, offset:int=0, limit:int=25) -> Optional[Sequence[TestCase]]:
+        try:
+            test_cases = []
+            headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
+            
+            while True:
+                self._client.request("GET", "/{}/regression/testcase?app={}&offset={}&limit={}".format(self._config.server.suffix, self._config.app.name, offset, limit), None, headers)
+                response = self._client.getresponse()
+                if response.status != 200:
+                    self._logger.error("Error occured while fetching test cases. Please try again.")
+                    return
+
+                body = json.loads(response.read().decode())
+                if body:
+                    for idx, case in enumerate(body):
+                        body[idx] = TestCase(**case)
+                    test_cases.extend(body)
+                    offset += limit
+                else:
+                    break
+            return test_cases
+        
+        except:
+            self._logger.exception("Exception occured while fetching test cases.")
+            return
+
 
     def test(self):
         passed = True
 
         time.sleep(self._config.app.delay)
+        
+        self._logger.info("Started test operations on the captured test cases.")
         cases = self.fetch()
         count = len(cases)
-
+        
+        self._logger.info("Total number of test cases to be checked = %d" %count)
         run_id = self.start(count)
+        
+        if not run_id:
+            return
+
+        self._logger.info("Started with testing...")
         for case in cases:
             ok = self.check(run_id, case)
             if not ok:
                 passed = False
+        self._logger.info("Finished with testing...")
         
+        self._logger.info("Cleaning up things...")
         self.end(run_id, passed)
-
+        
         return passed
 
