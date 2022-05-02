@@ -1,10 +1,12 @@
+import asyncio
 import json
 import logging
 import http.client
 import re
+import threading
 import time
 from typing import Iterable, List, Mapping, Optional, Sequence
-from keploy.mode import mode
+from keploy.mode import getMode
 from keploy.constants import MODE_TEST, USE_HTTPS
 
 from keploy.models import Config, Dependency, HttpResp, TestCase, TestCaseRequest, TestReq
@@ -22,8 +24,8 @@ class Keploy(object):
 
         self._config = conf
         self._logger = logger
-        self._dependencies:Mapping[str, List[Dependency]] = {}
-        self._responses:Mapping[str, HttpResp] = {}
+        self._dependencies = {}
+        self._responses = {}
         self._client = None
 
         if self._config.server.protocol == USE_HTTPS:
@@ -31,10 +33,11 @@ class Keploy(object):
         else:
             self._client = http.client.HTTPConnection(host=self._config.server.url, port=self._config.server.port)
 
-        self._client.connect()
+        # self._client.connect()
 
-        if mode == MODE_TEST:
-            self.test()
+        if getMode() == MODE_TEST:
+            t = threading.Thread(target=self.test)
+            t.start()
     
     
     def get_dependencies(self, id: str) -> Optional[Iterable[Dependency]]:
@@ -96,7 +99,7 @@ class Keploy(object):
                     return None
 
             headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-            bytes_data = json.dumps(rq.__dict__).encode()
+            bytes_data = json.dumps(rq, default=lambda o: o.__dict__).encode()
             self._client.request("POST", "/{}/regression/testcase".format(self._config.server.suffix), bytes_data, headers)
             
             response = self._client.getresponse()
@@ -120,7 +123,7 @@ class Keploy(object):
                 return
             
             headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-            bin_data = json.dumps(TestReq(id=id, app_id=self._config.app.name, resp=res).__dict__).encode()
+            bin_data = json.dumps(TestReq(id=id, app_id=self._config.app.name, resp=res), default=lambda o: o.__dict__).encode()
             self._client.request("POST", "/{}/regression/denoise".format(self._config.server.suffix), bin_data, headers)
             
             response = self._client.getresponse()
@@ -135,7 +138,7 @@ class Keploy(object):
             self._dependencies[test_case.id] = test_case.deps
             
             heads = test_case.http_req.header
-            heads['KEPLOY_TEST_ID'] = test_case.id
+            heads['KEPLOY_TEST_ID'] = [test_case.id]
             
             cli = http.client.HTTPConnection(self._config.app.host, self._config.app.port)
             cli._http_vsn = int(str(test_case.http_req.proto_major) + str(test_case.http_req.proto_minor))
@@ -145,9 +148,10 @@ class Keploy(object):
                 method=test_case.http_req.method,
                 url=self._config.app.suffix + test_case.http_req.url,
                 body=json.dumps(test_case.http_req.body).encode(),
-                headers=heads
+                headers={key: value[0] for key, value in heads.items()}
             )
 
+            # TODO: getting None in case of regular execution. Urgent fix needed.
             response = self.get_resp(test_case.id)
             if not response or not self._responses.pop(test_case.id, None):
                 self._logger.error("failed loading the response for testcase.")
@@ -170,7 +174,7 @@ class Keploy(object):
                 return False
             
             headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
-            bytes_data = json.dumps(TestReq(id=tc.id, app_id=self._config.app.name, run_id=r_id, resp=resp).__dict__).encode()
+            bytes_data = json.dumps(TestReq(id=tc.id, app_id=self._config.app.name, run_id=r_id, resp=resp), default=lambda o: o.__dict__).encode()
             self._client.request("POST", "/{}/regression/test".format(self._config.server.suffix), bytes_data, headers)
             
             response = self._client.getresponse()
@@ -236,7 +240,6 @@ class Keploy(object):
 
     def test(self):
         passed = True
-
         time.sleep(self._config.app.delay)
         
         self._logger.info("Started test operations on the captured test cases.")
