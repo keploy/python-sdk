@@ -108,17 +108,17 @@ class Keploy(object):
             body = json.loads(response.read().decode())
             if body.get('id', None):
                 self.denoise(body['id'], rq)
+            
         except:
             self._logger.error("Exception occured while storing the request information. Try again.")
 
     
     def denoise(self, id:str, tcase:TestCaseRequest):
-        time.sleep(2.0)
         try:
-            unit = TestCase(id, captured=tcase.captured, uri=tcase.uri, req=tcase.httpRequest, deps=tcase.deps)
+            unit = TestCase(id=id, captured=tcase.captured, uri=tcase.uri, http_req=tcase.http_req, http_resp={}, deps=tcase.deps)
             res = self.simulate(unit)
             if not res:
-                self._logger.error("failed to simulate request")
+                self._logger.error("failed to simulate request while denoising")
                 return
             
             headers = {'Content-type': 'application/json', 'key': self._config.server.licenseKey}
@@ -128,6 +128,9 @@ class Keploy(object):
             response = self._client.getresponse()
             if response.status != 200:
                 self._logger.error("failed to de-noise request to backend")
+            
+            body = response.read().decode()
+
         except:
             self._logger.error("Error occured while denoising the test case request. Skipping...")
 
@@ -150,6 +153,7 @@ class Keploy(object):
                 headers={key: value[0] for key, value in heads.items()}
             )
 
+            time.sleep(2.0)
             # TODO: getting None in case of regular execution. Urgent fix needed.
             response = self.get_resp(test_case.id)
             if not response or not self._responses.pop(test_case.id, None):
@@ -161,7 +165,7 @@ class Keploy(object):
             
             return response
         
-        except  Exception as e:
+        except Exception as e:
             self._logger.exception("Exception occured in simulation of test case with id: %s" %test_case.id)
         
 

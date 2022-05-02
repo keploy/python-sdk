@@ -132,15 +132,21 @@ class TestCase(object):
 		self.created = created
 		self.updated = updated
 		self.captured = captured
-		self.c_id = cid
+		self.cid = cid
 		self.app_id = app_id
 		self.uri = uri
-		self.http_req = HttpReq(**http_req)
-		self.http_resp = HttpResp(**http_resp)
-		self.deps = [Dependency(**dep) for dep in deps]
+		self.http_req = http_req
+		self.http_resp = http_resp
+		self.deps = [Dependency(**dep) if not isinstance(dep, Dependency) else dep for dep in deps]
 		self.all_keys = all_keys
 		self.anchors = anchors
 		self.noise = noise
+
+		if not isinstance(http_req, HttpReq):
+			self.http_req = HttpReq(**http_req)
+
+		if not isinstance(http_resp, HttpResp):
+			self.http_resp = HttpResp(**http_resp)
 
 
 class TestCaseRequest(object):

@@ -1,10 +1,10 @@
 from keploy.keploy import Keploy
-from keploy.models import HttpReq, HttpResp, TestCaseRequest
+from keploy.models import Dependency, HttpReq, HttpResp, TestCaseRequest
 import time
 
 def capture_test(k, reqst, resp):
     
-    deps = []
+    deps = [ Dependency('demo_dep', 'HTTP_CLIENT', {}, None), ]
 
     test = TestCaseRequest(
         captured=int(time.time()),
