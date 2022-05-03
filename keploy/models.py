@@ -113,7 +113,7 @@ class HttpReq(object):
 
 class HttpResp(object):
 	def __init__(self, status_code:int=None, header:Mapping[str, Sequence[str]]=None, body:str=None) -> None:
-		self.code = status_code
+		self.status_code = status_code
 		self.header = header
 		self.body = body
 
@@ -123,19 +123,30 @@ class TestCase(object):
 				 cid:str=None, app_id:str=None, uri:str=None, http_req:HttpReq=None,
 				 http_resp: HttpResp=None, deps:Sequence[Dependency]=None, all_keys:Mapping[str, Sequence[str]]=None,
 				 anchors:Mapping[str, Sequence[str]]=None, noise:Sequence[str]=None ) -> None:
+
+		#TODO: Need to handle the case when the API response is None instead of [] for deps
+		if not deps:
+			deps = []
+
 		self.id = id
 		self.created = created
 		self.updated = updated
 		self.captured = captured
-		self.c_id = cid
+		self.cid = cid
 		self.app_id = app_id
 		self.uri = uri
-		self.http_req = HttpReq(**http_req)
-		self.http_resp = HttpResp(**http_resp)
-		self.deps = [Dependency(**dep) for dep in deps]
+		self.http_req = http_req
+		self.http_resp = http_resp
+		self.deps = [Dependency(**dep) if not isinstance(dep, Dependency) else dep for dep in deps]
 		self.all_keys = all_keys
 		self.anchors = anchors
 		self.noise = noise
+
+		if not isinstance(http_req, HttpReq):
+			self.http_req = HttpReq(**http_req)
+
+		if not isinstance(http_resp, HttpResp):
+			self.http_resp = HttpResp(**http_resp)
 
 
 class TestCaseRequest(object):
@@ -143,8 +154,8 @@ class TestCaseRequest(object):
 		self.captured = captured
 		self.app_id = app_id
 		self.uri = uri
-		self.httpRequest = http_req
-		self.httpResponse = http_resp
+		self.http_req = http_req
+		self.http_resp = http_resp
 		self.deps = deps
 
 		if not captured:
