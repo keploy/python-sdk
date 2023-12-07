@@ -24,48 +24,9 @@ def start_user_application(run_cmd):
     command = run_cmd.split(" ")
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     user_command_pid = process.pid
-    thread = threading.Thread(target=log_process_output, args=(process,))
-    thread.start()
-    process.wait()
 
-def log_process_output(process):
-    for line in iter(process.stdout.readline, ''):
-        print(line, end='')
-
-def run_keploy_server(pid, delay, test_path, port):
-
-    server_port = port if port != 0 else server_port
-
-    # command = [
-    #     'sudo',
-    #     '-S',
-    #     '/usr/local/bin/keploy',
-    #     'serve',
-    #     f'--pid={pid}',
-    #     f'-p={test_path}',
-    #     f'-d={delay}',
-    #     f'--port={server_port}',
-    #     '--language="python"'
-    # ]
-    command = [
-    'sudo',
-    '-E',
-    'keploy',
-    'serve',
-    '-c', 
-    '"python3 app.py"',
-    '--delay',
-    '10',
-    '--language=python'
-    ]
-    # logger.info(command)
-    logger.info("Starting Keploy server...")
-    try:
-        process = subprocess.Popen(' '.join(command), shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        print(process)
-        logger.info("Keploy server started, waiting for it to be ready...")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to start Keploy server: {str(e)}")
+def stop_user_application():
+    kill_process_by_pid(user_command_pid)
 
 def get_test_run_status(status_str):
     status_mapping = {
@@ -75,6 +36,9 @@ def get_test_run_status(status_str):
     }
     return status_mapping.get(status_str)
 
+def log_process_output(process):
+    for line in iter(process.stdout.readline, ''):
+        logger.info(line, end='')
 
 def set_http_client():
     try:
@@ -149,7 +113,28 @@ def run_test_set(test_set_name):
     except Exception as e:
         logger.error("Error running test set", e)
         return None
-    
+
+def find_coverage(test_set):
+    # Ensure the coverage-report directory exists
+    coverage_report_dir = f'coverage-report/{test_set}'
+    if not os.path.exists(coverage_report_dir):
+        os.makedirs(coverage_report_dir)
+
+    cov = coverage.Coverage()
+    cov.load()
+
+    # Generate text coverage report
+    text_report_file = f"{coverage_report_dir}/{test_set}_coverage_report.txt"
+    with open(text_report_file, 'w') as f:
+        cov.report(file=f)
+
+    # Generate HTML coverage report
+    html_report_dir = f"{coverage_report_dir}/{test_set}_coverage_html"
+    cov.html_report(directory=html_report_dir)
+
+    # Log the report generation
+    logger.info(f"Coverage reports generated in {coverage_report_dir}")
+
 def kill_process_on_port(port):
     try:
         process = subprocess.Popen(["lsof", "-t", "-i:" + str(port)], stdout=subprocess.PIPE, universal_newlines=True)
@@ -180,16 +165,40 @@ def find_and_collect_child_processes(parent_pid):
             pids.extend(find_and_collect_child_processes(child_pid))
     return pids
 
+def run_keploy_server(pid, delay, port):
+    global serverPort
 
+    if port != 0:
+        serverPort = port
+
+    command = [
+        'sudo',
+        '-E',
+        'keploy',
+        'serve',
+        '-c', 
+        '"python3 app.py"',
+        '--delay',
+        '10',
+        '--language=python'
+    ]
+
+    logger.info(command)
+    logger.info("Starting Keploy server at {serverPort}...")
+    try:
+        process = subprocess.Popen(' '.join(command), shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        logger.info(process)
+        logger.info("Keploy server started, waiting for it to be ready...")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to start Keploy server: {str(e)}")
+# Other helper functions can be added as needed
 def stop_keploy_server():
     kill_process_on_port(server_port)
 
 def kill_process_by_pid(pid):
     try:
+        # Using SIGTERM (signal 15) to gracefully terminate the process
         subprocess.run(["kill", "-15", str(pid)])
         logger.debug(f"Killed process with PID: {pid}")
     except Exception as e:
-        logger.error(f"Failed to kill process with PID {pid}", e)
-
-def stop_user_application() :
-    kill_processes_and_their_children(user_command_pid)
+        logger.error(f"Failed to kill process with PID {pid}", e)    
