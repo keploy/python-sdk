@@ -27,6 +27,10 @@ def start_user_application(run_cmd):
 
 def stop_user_application():
     kill_process_by_pid(user_command_pid)
+    cov = coverage.Coverage()
+    cov.load()
+    cov.save()
+
 
 def get_test_run_status(status_str):
     status_mapping = {
