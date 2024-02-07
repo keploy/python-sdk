@@ -8,6 +8,8 @@ class CoverageMiddleware:
 
     def __call__(self, request):
         id = request.headers.get('KEPLOY-TEST-ID')
+        if id == None:
+            return self.get_response(request)
         cov = coverage.Coverage(cover_pylib=False)
         cov.start()
         response = self.get_response(request)
