@@ -22,11 +22,13 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install setuptools wheel twine
+      working-directory: ./keploy
 
     - name: Build and publish to PyPI
       run: |
         python setup.py sdist bdist_wheel
         twine upload dist/*
+      working-directory: ./keploy
       env:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
