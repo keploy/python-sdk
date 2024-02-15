@@ -135,15 +135,6 @@ def find_coverage(test_set):
     # Log the report generation
     logger.info(f"Coverage reports generated in {coverage_report_dir}")
 
-def find_and_collect_child_processes(parent_pid):
-    pids = [int(parent_pid)]
-    process = subprocess.Popen(["pgrep", "-P", parent_pid], stdout=subprocess.PIPE, universal_newlines=True)
-    output = process.communicate()[0]
-    for child_pid in output.split('\n'):
-        if child_pid:
-            pids.extend(find_and_collect_child_processes(child_pid))
-    return pids
-
 def kill_process_by_pid(pid):
     try:
         # Using SIGTERM (signal 15) to gracefully terminate the process
