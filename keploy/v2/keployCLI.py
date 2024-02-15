@@ -40,10 +40,6 @@ def get_test_run_status(status_str):
     }
     return status_mapping.get(status_str)
 
-def log_process_output(process):
-    for line in iter(process.stdout.readline, ''):
-        logger.info(line, end='')
-
 def set_http_client():
     try:
         url = f"{HOST}{server_port}{GRAPHQL_ENDPOINT}"
@@ -139,27 +135,6 @@ def find_coverage(test_set):
     # Log the report generation
     logger.info(f"Coverage reports generated in {coverage_report_dir}")
 
-def kill_process_on_port(port):
-    try:
-        process = subprocess.Popen(["lsof", "-t", "-i:" + str(port)], stdout=subprocess.PIPE, universal_newlines=True)
-        pids = process.communicate()[0]
-        for pid_str in pids.split('\n'):
-            if pid_str:
-                kill_processes_and_their_children(int(pid_str.strip()))
-    except Exception as e:
-        logger.error("Failed to fetch the process ID on port " + str(port), e)
-
-def kill_processes_and_their_children(parent_pid):
-    try:
-        pids = find_and_collect_child_processes(str(parent_pid))
-        current_pid = os.getpid()
-        for child_pid in pids:
-            if child_pid != current_pid:
-                subprocess.run(["kill", "-15", str(child_pid)])
-                logger.debug(f"Killed child process {child_pid}")
-    except Exception as e:
-        logger.error("Failed to kill child process", e)
-
 def find_and_collect_child_processes(parent_pid):
     pids = [int(parent_pid)]
     process = subprocess.Popen(["pgrep", "-P", parent_pid], stdout=subprocess.PIPE, universal_newlines=True)
@@ -169,40 +144,10 @@ def find_and_collect_child_processes(parent_pid):
             pids.extend(find_and_collect_child_processes(child_pid))
     return pids
 
-def run_keploy_server(pid, delay, port):
-    global serverPort
-
-    if port != 0:
-        serverPort = port
-
-    command = [
-        'sudo',
-        '-E',
-        'keploy',
-        'serve',
-        '-c', 
-        '"python3 app.py"',
-        '--delay',
-        '10',
-        '--language=python'
-    ]
-
-    logger.info(command)
-    logger.info("Starting Keploy server at {serverPort}...")
-    try:
-        process = subprocess.Popen(' '.join(command), shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        logger.info(process)
-        logger.info("Keploy server started, waiting for it to be ready...")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to start Keploy server: {str(e)}")
-# Other helper functions can be added as needed
-def stop_keploy_server():
-    kill_process_on_port(server_port)
-
 def kill_process_by_pid(pid):
     try:
         # Using SIGTERM (signal 15) to gracefully terminate the process
         subprocess.run(["kill", "-15", str(pid)])
         logger.debug(f"Killed process with PID: {pid}")
     except Exception as e:
-        logger.error(f"Failed to kill process with PID {pid}", e)    
+        logger.error(f"Failed to kill process with PID {pid}", e)
