@@ -1,12 +1,14 @@
-import json
+import psutil
 import os
 import requests
 import subprocess
-import threading
 import logging
 import coverage
+import time
 
-logger = logging.getLogger('KeployCLI')
+logging.basicConfig(level=logging.info)
+
+logger = logging.getLogger('Keploy')
 
 GRAPHQL_ENDPOINT = "/query"
 HOST = "http://localhost:"
@@ -17,6 +19,44 @@ class TestRunStatus:
     RUNNING = 1
     PASSED = 2
     FAILED = 3
+
+def run(run_cmd):
+        global user_command_pid
+        test_sets = fetch_test_sets()
+        logger.info("test_sets: ", test_sets)
+        if len(test_sets) == 0:
+            raise AssertionError("Failed to fetch test sets. Are you in the right directory?")
+        # Run for each test set.
+        for test_set in test_sets:
+            start_user_application(run_cmd)
+            test_run_id = run_test_set(test_set)
+            startTime = time.time()
+            if test_run_id is None:
+                logger.error(f"Failed to run test set: {test_set}")
+                continue
+            logger.info(f"Running test set: {test_set} with testrun ID: {test_run_id}")
+            while True:
+                subprocess.call(["sleep", "2"])
+                status = fetch_test_set_status(test_run_id)
+                if status is None:
+                    logger.error(f"Failed to fetch status for test set: {test_set}")
+                if status == TestRunStatus.RUNNING:
+                    logger.info(f"Test set: {test_set} is still running")
+                elif status == TestRunStatus.PASSED:
+                    logger.info(f"Test set: {test_set} passed")
+                    break
+                elif status == TestRunStatus.FAILED:
+                    logger.error(f"Test set: {test_set} failed")
+                    break
+                # If 1 minute has passed we exit.
+                if time.time() - startTime > 60:
+                    logger.error(f"Test set: {test_set} took too long to run")
+                    break
+            find_coverage(test_set)
+            stop_user_application()
+
+            # Wait for the user application to stop
+            subprocess.call(["sleep", "10"])
 
 def start_user_application(run_cmd):
     global user_command_pid
