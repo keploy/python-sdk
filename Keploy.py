@@ -3,7 +3,6 @@ import os
 import requests
 import subprocess
 import logging
-import coverage
 import time
 
 logging.basicConfig(level=logging.info)
@@ -21,15 +20,14 @@ class TestRunStatus:
     FAILED = 3
 
 def run(run_cmd):
-        global user_command_pid
         test_sets = fetch_test_sets()
         logger.info("test_sets: ", test_sets)
         if len(test_sets) == 0:
             raise AssertionError("Failed to fetch test sets. Are you in the right directory?")
         # Run for each test set.
         for test_set in test_sets:
-            start_user_application(run_cmd)
             test_run_id = run_test_set(test_set)
+            start_user_application(run_cmd)
             startTime = time.time()
             if test_run_id is None:
                 logger.error(f"Failed to run test set: {test_set}")
@@ -52,11 +50,29 @@ def run(run_cmd):
                 if time.time() - startTime > 60:
                     logger.error(f"Test set: {test_set} took too long to run")
                     break
-            find_coverage(test_set)
             stop_user_application()
-
             # Wait for the user application to stop
             subprocess.call(["sleep", "10"])
+        stop_test()
+
+
+def stop_test():
+    sessions,url, headers = set_http_client()
+    if url is None or headers is None:
+        return None
+    payload = {"query": "{ stopTest }"}
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        logger.debug(f"Status code received: {response.status_code}")
+        if response.ok:
+            res_body = response.json()
+            logger.debug(f"Response body received: {res_body}")
+            return res_body.get('data', {}).get('stopTest')
+        else:
+            return None
+    except Exception as e:
+        logger.error("Error stopping test", e)
+        return None
 
 def start_user_application(run_cmd):
     global user_command_pid
@@ -67,9 +83,6 @@ def start_user_application(run_cmd):
 
 def stop_user_application():
     kill_process_by_pid(user_command_pid)
-    cov = coverage.Coverage()
-    cov.load()
-    cov.save()
 
 
 def get_test_run_status(status_str):
@@ -153,27 +166,6 @@ def run_test_set(test_set_name):
     except Exception as e:
         logger.error("Error running test set", e)
         return None
-
-def find_coverage(test_set):
-    # Ensure the coverage-report directory exists
-    coverage_report_dir = f'coverage-report/{test_set}'
-    if not os.path.exists(coverage_report_dir):
-        os.makedirs(coverage_report_dir)
-
-    cov = coverage.Coverage()
-    cov.load()
-
-    # Generate text coverage report
-    text_report_file = f"{coverage_report_dir}/{test_set}_coverage_report.txt"
-    with open(text_report_file, 'w') as f:
-        cov.report(file=f)
-
-    # Generate HTML coverage report
-    html_report_dir = f"{coverage_report_dir}/{test_set}_coverage_html"
-    cov.html_report(directory=html_report_dir)
-
-    # Log the report generation
-    logger.info(f"Coverage reports generated in {coverage_report_dir}")
 
 def kill_process_by_pid(pid):
     try:
