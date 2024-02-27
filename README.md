@@ -16,7 +16,7 @@ The **HTTP mocks/stubs and tests are the same format** and inter-exchangeable.
 ## Installation
 1. First you need to install [Python(version 3 and above)](https://www.python.org/downloads/)
 
-2. Install the Python-SDK via pip and also Python's coverage library via pip
+2. Install the Python-SDK and also Python's coverage library via pip.
 
 ```bash
 pip install keploy coverage
@@ -37,8 +37,7 @@ def test_keploy():
 
 > Note: If you face any problems with running the coverage library, you can refer to the documentation for the same [here](https://coverage.readthedocs.io/en/7.4.2/cmd.html#execution-coverage-run)
 
-To ignore the coverage of python libraries which are included in the report by default, you can create a .coveragerc file in the directory where you will ignore the /usr/ directory. The contents of the file will be as follows:
-<!-- For Linux users only -->
+To ignore the coverage of python libraries which are included in the report by default, you can create a .coveragerc file in the directory where you will ignore the /usr/ directory(only for Linux users). The contents of the file will be as follows:
 
 ```bash
 [run]
