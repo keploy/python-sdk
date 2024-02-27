@@ -1,17 +1,13 @@
-import psutil
-import os
 import requests
 import subprocess
 import logging
-import time
 
 logging.basicConfig(level=logging.info)
 
 logger = logging.getLogger('Keploy')
 
 GRAPHQL_ENDPOINT = "/query"
-HOST = "http://localhost:"
-server_port = 6789
+HOST = "http://localhost:6789"
 user_command_pid = 0
 
 class TestRunStatus:
@@ -28,7 +24,6 @@ def run(run_cmd):
         for test_set in test_sets:
             test_run_id = run_test_set(test_set)
             start_user_application(run_cmd)
-            startTime = time.time()
             if test_run_id is None:
                 logger.error(f"Failed to run test set: {test_set}")
                 continue
@@ -45,10 +40,6 @@ def run(run_cmd):
                     break
                 elif status == TestRunStatus.FAILED:
                     logger.error(f"Test set: {test_set} failed")
-                    break
-                # If 1 minute has passed we exit.
-                if time.time() - startTime > 60:
-                    logger.error(f"Test set: {test_set} took too long to run")
                     break
             stop_user_application()
             # Wait for the user application to stop
@@ -95,7 +86,7 @@ def get_test_run_status(status_str):
 
 def set_http_client():
     try:
-        url = f"{HOST}{server_port}{GRAPHQL_ENDPOINT}"
+        url = f"{HOST}{GRAPHQL_ENDPOINT}"
         logger.debug(f"Connecting to: {url}")
         headers = {
             "Content-Type": "application/json; charset=UTF-8",
