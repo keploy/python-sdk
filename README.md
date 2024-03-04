@@ -30,22 +30,23 @@ Keploy simplifies the testing process by seamlessly generating end-to-end test c
 Add a test file with the following code to the directory with all your existing tests. This will help us to get the coverage of Keploy's API tests along with the other unit tests. We can call this `test_keploy.py`
 
 ```python
-from Keploy import run
+from keploy import run
 def test_keploy():
     run("python3 -m coverage run --data-file=.coverage_data.keploy <command-to-run-your-application>")
 ```
 
 > Note: If you face any problems with running the coverage library, you can refer to the documentation for the same [here](https://coverage.readthedocs.io/en/7.4.2/cmd.html#execution-coverage-run)
 
-To ignore the coverage of python libraries which are included in the report by default, you can create a .coveragerc file in the directory where you will ignore the /usr/ directory(only for Linux users). The contents of the file will be as follows:
+To ignore the coverage of python libraries which are included in the report by default, you need to create a `.coveragerc` file in the directory where you will ignore the /usr/ directory(only for Linux users). The contents of the file will be as follows:
 
 ```bash
 [run]
 omit =
     /usr/*
+sigterm = true
 ```
 
-Before starting your application, make sure that the debug mode is set to False in your application, for the coverage library to work properly.
+Before starting your application, make sure that the **debug mode is set to False** in your application, for the coverage library to work properly.
 
 Now to run this testcase along with your another unit testcases, you can run the command below:
 
