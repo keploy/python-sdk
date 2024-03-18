@@ -9,7 +9,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Keploy")
 
 GRAPHQL_ENDPOINT = "/query"
-HOST = "http://localhost:6789"
+# HOST = "http://localhost:6789"
+HOST = "localhost"
+PORT = 6789
 
 
 class TestRunStatus:
@@ -35,9 +37,20 @@ def get_test_run_status(status_str):
     return status_mapping.get(status_str)
 
 
-def run(run_cmd, delay=10, debug=False):
+class RunOptions:
+    def __init__(self, delay=10, debug=False, port=6789):
+        self.delay = delay
+        self.debug = debug
+        self.port = port
+
+
+def run(run_cmd, run_options: RunOptions):
+    if run_options.port is not 0:
+        global PORT
+        PORT = run_options.port
+
     # Starting keploy
-    start_keploy(run_cmd, delay, debug)
+    start_keploy(run_cmd, run_options.delay, run_options.debug, PORT)
 
     # Delay for keploy to start
     time.sleep(5)
@@ -66,7 +79,9 @@ def run(run_cmd, delay=10, debug=False):
         # Start user application
         start_user_application(appId)
         # Wait for keploy to write initial data to report file
-        time.sleep(delay) # Initial report is written only after delay in keploy
+        time.sleep(
+            run_options.delay
+        )  # Initial report is written only after delay in keploy
 
         logger.info(f"Running test set: {test_set} with testrun ID: {testRunId}")
         status = None
@@ -121,13 +136,14 @@ def run(run_cmd, delay=10, debug=False):
     stop_Keploy()
 
 
-def start_keploy(runCmd, delay, debug):
+def start_keploy(runCmd, delay, debug, port):
     thread = threading.Thread(
         target=run_keploy,
         args=(
             runCmd,
             delay,
             debug,
+            port,
         ),
         daemon=False,
     )
@@ -135,8 +151,8 @@ def start_keploy(runCmd, delay, debug):
     return thread
 
 
-def run_keploy(runCmd, delay, debug):
-    overallCmd = f'sudo -E env "PATH=$PATH" /usr/local/bin/keploy test -c "{runCmd}" --coverage --delay {delay}'
+def run_keploy(runCmd, delay, debug, port):
+    overallCmd = f'sudo -E env "PATH=$PATH" /usr/local/bin/keploybin test -c "{runCmd}" --coverage --delay {delay} --port {port}'
     if debug:
         overallCmd += " --debug"
 
@@ -153,7 +169,7 @@ def run_keploy(runCmd, delay, debug):
     # Read and print the output
     for line in process.stdout:
         # logger.info(line, end="")
-        print(line, end="",flush=True)
+        print(line, end="", flush=True)
 
     # Wait for the process to finish
     process.wait()
@@ -161,7 +177,7 @@ def run_keploy(runCmd, delay, debug):
 
 def set_http_client():
     try:
-        url = f"{HOST}{GRAPHQL_ENDPOINT}"
+        url = f"http://{HOST}:{PORT}{GRAPHQL_ENDPOINT}"
         logger.debug(f"Connecting to: {url}")
         headers = {
             "Content-Type": "application/json; charset=UTF-8",
@@ -214,7 +230,7 @@ def start_hooks():
             logger.debug(f"Response body received: {res_body}")
             if res_body.get("data", {}) is None:
                 return None, None, res_body.get("errors", {})
-            
+
             start_hooks_data = res_body.get("data", {}).get("startHooks")
             if start_hooks_data is None:
                 return None, None, f"Failed to get start Hooks data"
