@@ -41,11 +41,15 @@ class RunOptions:
     def __init__(self, delay=10, debug=False, port=6789):
         self.delay = delay
         self.debug = debug
-        self.port = port
+        # Ensure port is a positive integer
+        if isinstance(port, int) and port >= 0:
+            self.port = port
+        else:
+            raise ValueError("Port must be a positive integer.")
 
 
 def run(run_cmd, run_options: RunOptions):
-    if run_options.port is not 0:
+    if run_options.port != 0:
         global PORT
         PORT = run_options.port
 
@@ -55,85 +59,82 @@ def run(run_cmd, run_options: RunOptions):
     # Delay for keploy to start
     time.sleep(5)
 
-    # Fetching test sets
-    test_sets, err = fetch_test_sets()
-    if err is not None:
-        stop_Keploy()  # Stopping keploy as error fetching test sets
-        raise AssertionError(f"error fetching test sets: {err}")
-
-    logger.debug(f"Test sets found: {test_sets}")
-    if len(test_sets) == 0:
-        stop_Keploy()  # Stopping keploy as no test sets are found
-        raise AssertionError("No test sets found. Are you in the right directory?")
-
-    # Start hooking for the application
-    appId, testRunId, err = start_hooks()
-    if err is not None:
-        stop_Keploy()
-        raise AssertionError(f"error starting hooks: {err}")
-
-    # Run for each test set.
-    for test_set in test_sets:
-        # Run test set
-        run_test_set(testRunId, test_set, appId)
-        # Start user application
-        start_user_application(appId)
-        # Wait for keploy to write initial data to report file
-        time.sleep(
-            run_options.delay
-        )  # Initial report is written only after delay in keploy
-
-        logger.info(f"Running test set: {test_set} with testrun ID: {testRunId}")
-        status = None
-        while True:
-            time.sleep(2)
-            status, err = fetch_test_set_status(testRunId, test_set)
-            if err is not None or status is None:
-                logger.error(
-                    f"error getting test set status for testRunId: {testRunId}, testSetId: {test_set}. Error: {err}"
-                )
-                break
-
-            match status:
-                case TestRunStatus.RUNNING:
-                    logger.info(f"Test set: {test_set} is still running")
-                case TestRunStatus.PASSED:
-                    break
-                case TestRunStatus.FAILED:
-                    break
-                case TestRunStatus.APP_HALTED:
-                    break
-                case TestRunStatus.USER_ABORT:
-                    break
-                case TestRunStatus.APP_FAULT:
-                    break
-                case TestRunStatus.INTERNAL_ERR:
-                    break
-
-        # Check if the test set status has some internal error
-        # In all these cases the application couldn't be started properly
-        if (
-            status == None
-            or status == TestRunStatus.APP_HALTED
-            or status == TestRunStatus.USER_ABORT
-            or status == TestRunStatus.APP_FAULT
-            or status == TestRunStatus.INTERNAL_ERR
-        ):
-            logger.error(f"Test set: {test_set} failed with status: {status}")
-
-        if status == TestRunStatus.FAILED:
-            logger.error(f"Test set: {test_set} failed")
-        elif status == TestRunStatus.PASSED:
-            logger.info(f"Test set: {test_set} passed")
-
-        # Stop user application
-        err = stop_user_application(appId)
+    try:
+        # Fetching test sets
+        test_sets, err = fetch_test_sets()
         if err is not None:
-            stop_Keploy()
-            raise AssertionError(f"error stopping user application: {err}")
-        time.sleep(5)  # Wait for the user application to stop
-    # Stop keploy after running all test sets
-    stop_Keploy()
+            raise AssertionError(f"error fetching test sets: {err}")
+
+        logger.debug(f"Test sets found: {test_sets}")
+        if len(test_sets) == 0:
+            raise AssertionError("No test sets found. Are you in the right directory?")
+
+        # Start hooking for the application
+        appId, testRunId, err = start_hooks()
+        if err is not None:
+            raise AssertionError(f"error starting hooks: {err}")
+
+        # Run for each test set.
+        for test_set in test_sets:
+            # Run test set
+            run_test_set(testRunId, test_set, appId)
+            # Start user application
+            start_user_application(appId)
+            # Wait for keploy to write initial data to report file
+            time.sleep(
+                run_options.delay
+            )  # Initial report is written only after delay in keploy
+
+            logger.info(f"Running test set: {test_set} with testrun ID: {testRunId}")
+            status = None
+            while True:
+                time.sleep(2)
+                status, err = fetch_test_set_status(testRunId, test_set)
+                if err is not None or status is None:
+                    logger.error(
+                        f"error getting test set status for testRunId: {testRunId}, testSetId: {test_set}. Error: {err}"
+                    )
+                    break
+
+                match status:
+                    case TestRunStatus.RUNNING:
+                        logger.info(f"Test set: {test_set} is still running")
+                    case TestRunStatus.PASSED:
+                        break
+                    case TestRunStatus.FAILED:
+                        break
+                    case TestRunStatus.APP_HALTED:
+                        break
+                    case TestRunStatus.USER_ABORT:
+                        break
+                    case TestRunStatus.APP_FAULT:
+                        break
+                    case TestRunStatus.INTERNAL_ERR:
+                        break
+
+            # Check if the test set status has some internal error
+            if (
+                status == None
+                or status == TestRunStatus.APP_HALTED
+                or status == TestRunStatus.USER_ABORT
+                or status == TestRunStatus.APP_FAULT
+                or status == TestRunStatus.INTERNAL_ERR
+            ):
+                logger.error(f"Test set: {test_set} failed with status: {status}")
+
+            if status == TestRunStatus.FAILED:
+                logger.error(f"Test set: {test_set} failed")
+            elif status == TestRunStatus.PASSED:
+                logger.info(f"Test set: {test_set} passed")
+
+            # Stop user application
+            err = stop_user_application(appId)
+            if err is not None:
+                raise AssertionError(f"error stopping user application: {err}")
+            time.sleep(5)  # Wait for the user application to stop
+    finally:
+        # Stop keploy after running all test sets
+        stop_Keploy()
 
 
 def start_keploy(runCmd, delay, debug, port):
