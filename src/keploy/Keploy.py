@@ -3,13 +3,13 @@ import logging
 import threading
 import subprocess
 import time
+import os
 
 logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger("Keploy")
 
 GRAPHQL_ENDPOINT = "/query"
-# HOST = "http://localhost:6789"
 HOST = "localhost"
 PORT = 6789
 
@@ -38,9 +38,14 @@ def get_test_run_status(status_str):
 
 
 class RunOptions:
-    def __init__(self, delay=10, debug=False, port=6789):
-        self.delay = delay
+    def __init__(self, delay=10, debug=False, port=6789, path="."):
+        if isinstance(delay, int) and delay >= 0:
+            self.delay = delay
+        else:
+            raise ValueError("Delay must be a positive integer.")
         self.debug = debug
+        if path != "":
+            self.path = path
         # Ensure port is a positive integer
         if isinstance(port, int) and port >= 0:
             self.port = port
@@ -80,15 +85,28 @@ def run(run_cmd, run_options: RunOptions):
             run_test_set(testRunId, test_set, appId)
             # Start user application
             start_user_application(appId)
+
+            path = os.path.abspath(run_options.path)
+            report_path = os.path.join(
+                path, "Keploy", "reports", testRunId, f"{test_set}-report.yaml"
+            )
+            # check if the report file is created
+            err = check_report_file(report_path, run_options.delay + 10)
+            if err is not None:
+                # Stop user application
+                appErr = stop_user_application(appId)
+                if appErr is not None:
+                    raise AssertionError(f"error stopping user application: {appErr}")
+                logger.error(
+                    f"error getting report file: {testRunId}, testSetId: {test_set}. Error: {err}"
+                )
+                continue
+
             # Wait for keploy to write initial data to report file
-            time.sleep(
-                run_options.delay
-            )  # Initial report is written only after delay in keploy
 
             logger.info(f"Running test set: {test_set} with testrun ID: {testRunId}")
             status = None
             while True:
-                time.sleep(2)
                 status, err = fetch_test_set_status(testRunId, test_set)
                 if err is not None or status is None:
                     logger.error(
@@ -301,6 +319,21 @@ def start_user_application(appId):
     except Exception as e:
         logger.error(f"Error starting user application: {e}")
         return False, f"Error starting user application: {e}"
+
+
+def check_report_file(report_path, timeout):
+
+    logger.debug(f"Checking report file at: {report_path}")
+    print(f"Checking report file at: {report_path}")
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        print(f"Checking Path: {report_path}")
+        if os.path.exists(report_path):
+            return None  # Report file found
+        time.sleep(1)  # Wait for 1 second before checking again
+
+    return f"Report file not created within {timeout} seconds"
 
 
 def fetch_test_set_status(testRunId, testSetId):
