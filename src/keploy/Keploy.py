@@ -170,7 +170,7 @@ def start_keploy(runCmd, delay, debug, port):
         daemon=False,
     )
     thread.start()
-    return thread
+    return
 
 
 def run_keploy(runCmd, delay, debug, port):
