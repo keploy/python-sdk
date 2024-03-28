@@ -58,8 +58,8 @@ def run(run_cmd, run_options: RunOptions):
         global PORT
         PORT = run_options.port
 
-    if run_options.debug:
-        logger.setLevel(logging.DEBUG)
+    # if run_options.debug:
+    #     logger.setLevel(logging.DEBUG)
 
     # Starting keploy
     start_keploy(run_cmd, run_options.delay, run_options.debug, PORT)
@@ -89,21 +89,23 @@ def run(run_cmd, run_options: RunOptions):
             # Start user application
             start_user_application(appId)
 
-            path = os.path.abspath(run_options.path)
-            report_path = os.path.join(
-                path, "Keploy", "reports", testRunId, f"{test_set}-report.yaml"
-            )
-            # check if the report file is created
-            err = check_report_file(report_path, run_options.delay + 10)
-            if err is not None:
-                # Stop user application
-                appErr = stop_user_application(appId)
-                if appErr is not None:
-                    raise AssertionError(f"error stopping user application: {appErr}")
-                logger.error(
-                    f"error getting report file: {testRunId}, testSetId: {test_set}. Error: {err}"
-                )
-                continue
+            # path = os.path.abspath(run_options.path)
+            # report_path = os.path.join(
+            #     path, "Keploy", "reports", testRunId, f"{test_set}-report.yaml"
+            # )
+            # # check if the report file is created
+            # err = check_report_file(report_path, run_options.delay + 10)
+            # if err is not None:
+            #     # Stop user application
+            #     appErr = stop_user_application(appId)
+            #     if appErr is not None:
+            #         raise AssertionError(f"error stopping user application: {appErr}")
+            #     logger.error(
+            #         f"error getting report file: {testRunId}, testSetId: {test_set}. Error: {err}"
+            #     )
+            #     continue
+
+            time.sleep(run_options.delay + 2)
 
             # Wait for keploy to write initial data to report file
 
@@ -330,17 +332,17 @@ def start_user_application(appId):
         return False, f"Error starting user application: {e}"
 
 
-def check_report_file(report_path, timeout):
+# def check_report_file(report_path, timeout):
 
-    logger.debug(f"Checking report file at: {report_path}")
+#     logger.debug(f"Checking report file at: {report_path}")
 
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        if os.path.exists(report_path):
-            return None  # Report file found
-        time.sleep(1)  # Wait for 1 second before checking again
+#     start_time = time.time()
+#     while time.time() - start_time < timeout:
+#         if os.path.exists(report_path):
+#             return None  # Report file found
+#         time.sleep(1)  # Wait for 1 second before checking again
 
-    return f"Report file not created within {timeout} seconds"
+#     return f"Report file not created within {timeout} seconds"
 
 
 def fetch_test_set_status(testRunId, testSetId):
