@@ -58,6 +58,9 @@ def run(run_cmd, run_options: RunOptions):
         global PORT
         PORT = run_options.port
 
+    if run_options.debug:
+        logger.setLevel(logging.DEBUG)
+
     # Starting keploy
     start_keploy(run_cmd, run_options.delay, run_options.debug, PORT)
 
