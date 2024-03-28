@@ -324,11 +324,9 @@ def start_user_application(appId):
 def check_report_file(report_path, timeout):
 
     logger.debug(f"Checking report file at: {report_path}")
-    print(f"Checking report file at: {report_path}")
 
     start_time = time.time()
     while time.time() - start_time < timeout:
-        print(f"Checking Path: {report_path}")
         if os.path.exists(report_path):
             return None  # Report file found
         time.sleep(1)  # Wait for 1 second before checking again
