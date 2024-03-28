@@ -178,6 +178,7 @@ def run_keploy(runCmd, delay, debug, port):
 
     if not os.path.exists(keployBin):
         print(f"Keploy binary doesn't exist, please install keploy")
+        return
 
     overallCmd = f'sudo -E env "PATH=$PATH" "{keployBin}" test -c "{runCmd}" --coverage --delay {delay} --port {port}'
     if debug:
