@@ -174,7 +174,12 @@ def start_keploy(runCmd, delay, debug, port):
 
 
 def run_keploy(runCmd, delay, debug, port):
-    overallCmd = f'sudo -E env "PATH=$PATH" /usr/local/bin/keploybin test -c "{runCmd}" --coverage --delay {delay} --port {port}'
+    keployBin = "/usr/local/bin/keploybin"
+
+    if not os.path.exists(keployBin):
+        print(f"Keploy binary doesn't exist, please install keploy")
+
+    overallCmd = f'sudo -E env "PATH=$PATH" "{keployBin}" test -c "{runCmd}" --coverage --delay {delay} --port {port}'
     if debug:
         overallCmd += " --debug"
 
