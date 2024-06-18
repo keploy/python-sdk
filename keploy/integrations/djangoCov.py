@@ -14,6 +14,6 @@ class CoverageMiddleware:
         cov.start()
         response = self.get_response(request)
         cov.stop()
-        result = cov.get_data()    
+        result = cov.get_data()
         write_dedup(result, id)
         return response
