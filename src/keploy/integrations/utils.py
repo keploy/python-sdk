@@ -1,7 +1,7 @@
 import yaml
 
 def write_dedup(result, id):
-    filePath = '/Users/pranshu/testing/python-fastapi/dedupData.yaml'
+    filePath = 'dedupData.yaml'
     existingData = []
     try:
         with open(filePath, 'r') as file:
