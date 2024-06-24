@@ -1,8 +1,8 @@
 import coverage
 
-from utils import write_dedup
+from .utils import write_dedup
 
-class CoverageMiddleware:
+class DjangoCoverageMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
 
@@ -17,3 +17,4 @@ class CoverageMiddleware:
         result = cov.get_data()
         write_dedup(result, id)
         return response
+    
