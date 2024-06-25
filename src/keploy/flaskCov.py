@@ -1,8 +1,8 @@
 import coverage
 
-from utils import write_dedup
+from .utils import write_dedup
 
-class CoverageMiddleware:
+class FlaskCoverageMiddleware:
     def __init__(self, app):
         self.app = app
 

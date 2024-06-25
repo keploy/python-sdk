@@ -1,7 +1,7 @@
 import yaml
 
 def write_dedup(result, id):
-    filePath = '/Users/pranshu/testing/python-fastapi/dedupData.yaml'
+    filePath = 'dedupData.yaml'
     existingData = []
     try:
         with open(filePath, 'r') as file:
@@ -21,3 +21,4 @@ def write_dedup(result, id):
     existingData.append(yaml_data)
     with open(filePath, 'w') as file:
         yaml.dump(existingData, file, sort_keys=False)
+        

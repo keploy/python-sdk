@@ -2,9 +2,9 @@ import coverage
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from utils import write_dedup
+from .utils import write_dedup
 
-class CoverageMiddleware(BaseHTTPMiddleware):
+class FastApiCoverageMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         id = request.headers.get('KEPLOY-TEST-ID')
         if id is None:
