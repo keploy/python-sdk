@@ -11,7 +11,10 @@ class FastApiCoverageMiddleware(BaseHTTPMiddleware):
         if id is None:
             response = await call_next(request)
             return response
-
+        global_coverage = coverage.Coverage.current()
+        if global_coverage is not None:
+            response = await call_next(request)
+            return response
         cov = coverage.Coverage(cover_pylib=False)
         cov.start()
         response = await call_next(request)
