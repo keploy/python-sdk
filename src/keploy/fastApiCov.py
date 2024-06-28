@@ -7,6 +7,7 @@ from .utils import write_dedup
 class FastApiCoverageMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         id = request.headers.get('KEPLOY-TEST-ID')
+        testSet = request.headers.get('KEPLOY-TEST-SET-ID')
         if id is None:
             response = await call_next(request)
             return response
@@ -16,5 +17,5 @@ class FastApiCoverageMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         cov.stop()
         result = cov.get_data()
-        write_dedup(result, id)
+        write_dedup(result, id, testSet)
         return response

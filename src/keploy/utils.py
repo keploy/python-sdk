@@ -1,6 +1,6 @@
 import yaml
 
-def write_dedup(result, id):
+def write_dedup(result, id, testSet=""):
     filePath = 'dedupData.yaml'
     existingData = []
     try:
@@ -11,7 +11,7 @@ def write_dedup(result, id):
             pass
 
     yaml_data = {
-        'id': id,
+        'id': testSet + "/" + id,
         'executedLinesByFile': {}
     }
     for file in result.measured_files():
@@ -21,4 +21,3 @@ def write_dedup(result, id):
     existingData.append(yaml_data)
     with open(filePath, 'w') as file:
         yaml.dump(existingData, file, sort_keys=False)
-        
