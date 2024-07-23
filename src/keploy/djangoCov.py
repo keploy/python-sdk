@@ -8,6 +8,7 @@ class DjangoCoverageMiddleware:
 
     def __call__(self, request):
         id = request.headers.get('KEPLOY-TEST-ID')
+        testSet = request.headers.get('KEPLOY-TEST-SET-ID')
         if id == None:
             return self.get_response(request)
         cov = coverage.Coverage(cover_pylib=False)
@@ -15,6 +16,5 @@ class DjangoCoverageMiddleware:
         response = self.get_response(request)
         cov.stop()
         result = cov.get_data()
-        write_dedup(result, id)
+        write_dedup(result, id, testSet)
         return response
-    
