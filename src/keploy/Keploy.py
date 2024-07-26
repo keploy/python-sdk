@@ -155,6 +155,8 @@ def run(run_cmd, run_options: RunOptions):
             if err is not None:
                 raise AssertionError(f"error stopping user application: {err}")
             time.sleep(5)  # Wait for the user application to stop
+            # Update_report_with_coverage
+            update_report_with_coverage(testRunId, test_set)
     finally:
         # Stop keploy after running all test sets
         stop_Keploy()
@@ -303,6 +305,35 @@ def run_test_set(testRunId, testSetId, appId):
     except Exception as e:
         logger.error(f"Error running test set: {e}")
         return False, f"Error running test set: {e}"
+
+
+def update_report_with_coverage(testRunId, testSetId):
+    session, url, headers = set_http_client()
+    if session is None or url is None or headers is None:
+        return False, "Failed to set up HTTP client"
+
+    payload = {
+        "query": f'mutation UpdateReportWithCov {{ updateReportWithCov(testRunId: "{testRunId}", testSetId: "{testSetId}", language: "python") }}'
+    }
+
+    try:
+        response = session.post(url, headers=headers, json=payload, timeout=10)
+        logger.debug(f"Status code received: {response.status_code}")
+
+        if response.ok:
+            res_body = response.json()
+            logger.debug(f"Response body received: {res_body}")
+            if res_body.get("data", {}) is None:
+                return False, res_body.get("errors", {})
+            return res_body.get("data", {}).get("updateReportWithCov"), None
+        else:
+            return (
+                False,
+                f"Failed to update report with coverage. Status code: {response.status_code}",
+            )
+    except Exception as e:
+        logger.error(f"Error updating report with coverage: {e}")
+        return False, f"Error updating report with coverage: {e}"
 
 
 def start_user_application(appId):
