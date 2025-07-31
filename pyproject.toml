@@ -1,0 +1,34 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keploy-agent"
+version = "0.1.0"
+authors = [
+  { name="Keploy Team", email="hello@keploy.io" },
+]
+description = "A side-effect agent for collecting Python code coverage during Keploy test runs."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file="LICENSE" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Monitoring",
+]
+
+# This is where you list the package's dependencies
+dependencies = [
+    "coverage>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/keploy/python-sdk"
+"Bug Tracker" = "https://github.com/keploy/python-sdk/issues"
