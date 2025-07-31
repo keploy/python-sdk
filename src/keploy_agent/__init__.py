@@ -1,180 +1,153 @@
-import socket
-import threading
-import os
-import json
-import logging
-import coverage
+"""
+Keploy Python agent – always-on trace, per-test diff, std-lib filtered.
+"""
 
-# --- Configuration ---
-# Set up logging to be informative
-logging.basicConfig(level=logging.INFO, format='[Keploy Agent] %(asctime)s - %(levelname)s - %(message)s')
+from __future__ import annotations
+import os, sys, json, time, socket, threading, logging, trace
+import sysconfig, site, pathlib
+from typing import Dict, Tuple
 
-# Define socket paths, same as the Go implementation
-CONTROL_SOCKET_PATH = "/tmp/coverage_control.sock"
-DATA_SOCKET_PATH = "/tmp/coverage_data.sock"
+# ------------------------------------------------ configuration
+CONTROL_SOCK = "/tmp/coverage_control.sock"
+DATA_SOCK    = "/tmp/coverage_data.sock"
 
-# --- Global State ---
-# This lock protects access to the current_test_id
-control_lock = threading.Lock()
-# Stores the ID of the test case currently being recorded
-current_test_id = None
-
-# Get the directory where the agent's __init__.py is located.
-agent_dir = os.path.dirname(os.path.abspath(__file__))
-
-source_dir = os.environ.get("KEPLOY_APP_SOURCE_DIR", os.getcwd())
-logging.info(f"Coverage will measure source files in: {source_dir}")
+APP_ROOT  = pathlib.Path(os.getenv("KEPLOY_APP_SOURCE_DIR", os.getcwd())).resolve()
+AGENT_DIR = pathlib.Path(__file__).parent.resolve()
+STDLIB    = pathlib.Path(sysconfig.get_paths()["stdlib"]).resolve()
+SITE_PKGS = [pathlib.Path(p).resolve() for p in site.getsitepackages()]
 
 
-cov = coverage.Coverage(
-    source=[source_dir],
-    omit=[f"{agent_dir}/*"],
-    config_file=False,
-    # concurrency=True,
-    data_file=None,
-    auto_data=True
-)
+logging.basicConfig(level=logging.INFO,
+                    format='[Keploy Agent] %(asctime)s - %(message)s')
+
+# ------------------------------------------------ global tracer
+_tracer = trace.Trace(count=1, trace=0)
+sys.settrace(_tracer.globaltrace)           # main thread
+threading.settrace(_tracer.globaltrace)     # all future threads
+logging.info("Global tracer started for every thread")
+
+# ------------------------------------------------ agent state
+lock            = threading.Lock()
+current_id      = None                      # active test-case id
+baseline_counts: Dict[Tuple[str, int], int] = {}  # empty after clear
+baseline_tids: set[int] = set()
 
 
-def handle_control_request(conn: socket.socket):
-    """
-    Parses commands from Keploy ("START testID", "END testID") sent over the socket.
-    This runs in its own thread for each connection.
-    """
-    global current_test_id
+# ------------------------------------------------ helpers
+def _copy_counts_once() -> dict[tuple[str, int], int]:
+    while True:
+        try:  return dict(_tracer.results().counts)
+        except RuntimeError:  continue            # mutated – retry
+
+def _stable_snapshot(max_wait: float = .5) -> dict[tuple[str, int], int]:
+    start = time.time(); snap = _copy_counts_once()
+    while True:
+        time.sleep(0.07)
+        snap2 = _copy_counts_once()
+        if snap2 == snap or (time.time() - start) >= max_wait:
+            return snap2
+        snap = snap2
+
+def _ack(c: socket.socket):
+    try: c.sendall(b"ACK\n")
+    except OSError: pass
+
+def _is_app_file(raw: str, p: pathlib.Path) -> bool:
+    if "<frozen " in raw:               return False
+    if p.is_relative_to(AGENT_DIR):     return False
+    if p.is_relative_to(STDLIB):        return False
+    if any(p.is_relative_to(sp) for sp in SITE_PKGS): return False
+    return p.is_relative_to(APP_ROOT)
+
+def _diff(after: Dict, before: Dict):
+    for key, hits in after.items():
+        if hits > before.get(key, 0):
+            yield key
+
+def _emit(test_id: str):
+    after = _stable_snapshot()
+    data  = {}
+    for (raw, line) in _diff(after, baseline_counts):
+        p = pathlib.Path(raw).resolve()
+        if _is_app_file(raw, p):
+            data.setdefault(str(p), []).append(line)
+
+    payload = json.dumps({"id": test_id,
+                          "executedLinesByFile": data},
+                         separators=(",", ":")).encode()
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(DATA_SOCK); s.sendall(payload)
+
+    logging.info(f"[{test_id}] sent {len(data)} file(s) / "
+                 f"{sum(len(v) for v in data.values())} line(s)")
+
+# ------------------------------------------------ per-connection handler
+def _handle(conn: socket.socket):
+    global current_id, baseline_counts, baseline_tids
+    fp = conn.makefile("r")
     try:
-        with conn:
-            reader = conn.makefile('r')
-            command = reader.readline()
-            if not command:
+        cmd = fp.readline().strip()
+        if not cmd: return
+        action, test_id = cmd.split(" ", 1)
+
+        with lock:
+            if action == "START":
+                logging.info(f"START {test_id}")
+
+                _tracer.results().counts.clear()        # start from 0 hits
+                baseline_counts = {}                    # diff against empty dict
+                baseline_tids = _current_tids()         # remember threads
+
+                current_id = test_id
+                _ack(conn)
                 return
 
-            parts = command.strip().split(" ", 1)
-            if len(parts) != 2:
-                logging.error(f"Invalid command format: '{command.strip()}'")
+            if action == "END":
+                logging.info(f"END   {test_id}")
+                if test_id == current_id:
+                    _wait_for_worker_exit(baseline_tids)   # <- NEW
+                    time.sleep(0.02)  
+                    _emit(test_id)
+                    current_id = None
+                _ack(conn)
                 return
 
-            action, test_id = parts[0], parts[1]
-
-            with control_lock:
-                if action == "START":
-                    logging.info(f"Received START for test: {test_id}")
-                    current_test_id = test_id
-                    cov.erase()
-                    cov.start()
-                
-                elif action == "END":
-                    if current_test_id != test_id:
-                        logging.warning(
-                            f"Mismatched END command. Expected '{current_test_id}', got '{test_id}'. "
-                            "Skipping coverage report."
-                        )
-                        return
-                    
-                    logging.info(f"Received END for test: {test_id}. Reporting coverage.")
-                    cov.stop()
-                    cov.save()
-                    
-                    try:
-                        report_coverage(test_id)
-                    except Exception as e:
-                        logging.error(f"Failed to report coverage for test {test_id}: {e}", exc_info=True)
-                    
-                    current_test_id = None
-                    # Acknowledge the command
-                    conn.sendall(b"ACK\n")
-
-                else:
-                    logging.warning(f"Unrecognized command: {action}")
+            logging.warning(f"Unknown command: {action}")
+            _ack(conn)
 
     except Exception as e:
-        logging.error(f"Error handling control request: {e}", exc_info=True)
-
-
-def report_coverage(test_id: str):
-    """
-    Gathers, processes, and sends the coverage data to the data socket.
-    """
-    data = cov.get_data()
-
-    # Diagnostic logging to see what files were measured
-    measured_files = data.measured_files()
-    logging.info(f"Measured files for test {test_id}: {measured_files}")
-    
-    if not data:
-        logging.warning("Coverage data is empty. No report will be sent.")
-        return
-
-    executed_lines_by_file = {}
-    for filename in measured_files:
-        abs_path = os.path.abspath(filename)
-        lines = data.lines(filename)
-        if lines:
-            executed_lines_by_file[abs_path] = lines
-
-    if not executed_lines_by_file:
-        logging.warning(f"No covered lines were found for test {test_id}. The report will be empty.")
-    
-    payload = {
-        "id": test_id,
-        "executedLinesByFile": executed_lines_by_file,
-    }
-
-    try:
-        json_data = json.dumps(payload).encode('utf-8')
-        send_to_data_socket(json_data)
-        logging.info(f"Successfully sent coverage report for test: {test_id}")
-    except Exception as e:
-        logging.error(f"Failed to serialize or send coverage data: {e}", exc_info=True)
-
-
-def send_to_data_socket(data: bytes):
-    """Connects to the Keploy data socket and writes the JSON payload."""
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.connect(DATA_SOCKET_PATH)
-            s.sendall(data)
-    except Exception as e:
-        logging.error(f"Could not connect or send to data socket at {DATA_SOCKET_PATH}: {e}")
-        raise
-
-
-def start_control_server():
-    """
-    Sets up and runs the Unix socket server that listens for commands from Keploy.
-    This function runs in a background thread.
-    """
-    if os.path.exists(CONTROL_SOCKET_PATH):
-        try:
-            os.remove(CONTROL_SOCKET_PATH)
-        except OSError as e:
-            logging.error(f"Failed to remove old control socket: {e}")
-            return
-
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        server.bind(CONTROL_SOCKET_PATH)
-        server.listen()
-        logging.info(f"Control server listening on {CONTROL_SOCKET_PATH}")
-
-        while True:
-            conn, _ = server.accept()
-            handler_thread = threading.Thread(target=handle_control_request, args=(conn,))
-            handler_thread.start()
-
-    except Exception as e:
-        logging.error(f"Control server failed: {e}", exc_info=True)
+        logging.error(f"Handler error: {e}", exc_info=True); _ack(conn)
     finally:
-        server.close()
-        logging.info("Control server shut down.")
+        try: fp.close(); conn.close()
+        except Exception: pass
+
+# ------------------------------------------------ control server
+def _server():
+    if os.path.exists(CONTROL_SOCK): os.remove(CONTROL_SOCK)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(CONTROL_SOCK); srv.listen()
+    logging.info(f"Keploy control server at {CONTROL_SOCK}")
+    try:
+        while True:
+            c, _ = srv.accept()
+            threading.Thread(target=_handle, args=(c,), daemon=True).start()
+    finally:
+        srv.close()
+
+threading.Thread(target=_server, daemon=False,
+                 name="KeployControlServer").start()
+logging.info("Keploy agent ready (always-on tracer, clean start per test)")
 
 
-# --- SIDE-EFFECT ON IMPORT ---
-# This is the code that runs automatically when `import keploy_agent` is executed.
-logging.info("Initializing...")
+# ---------------------------------------------------------------- thread helper
+def _current_tids() -> set[int]:
+    return {t.ident for t in threading.enumerate() if t.ident is not None}
 
-# Start the control server in a background daemon thread.
-control_thread = threading.Thread(target=start_control_server, daemon=True)
-control_thread.start()
-
-logging.info("Agent initialized and control server started in the background.")
+def _wait_for_worker_exit(baseline: set[int], timeout: float = 1.0):
+    """Block until no extra threads (vs. baseline) remain, or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _current_tids() <= baseline:       # no extra threads left
+            return
+        time.sleep(0.02)                      # wait 20 ms and retry
