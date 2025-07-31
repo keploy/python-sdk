@@ -54,3 +54,13 @@ Now, you can run your application tests using the Keploy CLI. The agent will aut
 ```bash
 sudo -E keploy-enterprise test -c "python3 app.py" --language python --dedup
 ```
+
+Now you will see `dedupData.yaml` getting created. 
+
+Run `sudo -E keploy-enterprise dedup` to get the tests which are duplicate in `duplicates.yaml` file
+
+In order to remove the duplicate tests, run the following command:
+
+```bash
+sudo -E keploy-enterprise dedup --rm
+```
