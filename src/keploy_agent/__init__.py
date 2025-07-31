@@ -19,7 +19,16 @@ control_lock = threading.Lock()
 # Stores the ID of the test case currently being recorded
 current_test_id = None
 
-cov = coverage.Coverage(data_file=None, auto_data=True)
+# Get the directory where the agent's __init__.py is located.
+agent_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Configure coverage to measure all executed code, but explicitly OMIT the agent's own code.
+# This is less restrictive and ensures the user's application code is captured.
+cov = coverage.Coverage(
+    omit=[f"{agent_dir}/*"],
+    data_file=None,
+    auto_data=True
+)
 
 
 def handle_control_request(conn: socket.socket):
@@ -95,6 +104,8 @@ def report_coverage(test_id: str):
 
     if not executed_lines_by_file:
         logging.warning(f"No covered lines were found for test {test_id}. The report will be empty.")
+        # We still send the payload, even if empty, to signal completion.
+        # The Go side will handle ignoring it.
     
     payload = {
         "id": test_id,
