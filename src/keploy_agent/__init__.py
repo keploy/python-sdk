@@ -22,10 +22,15 @@ current_test_id = None
 # Get the directory where the agent's __init__.py is located.
 agent_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Configure coverage to measure all executed code, but explicitly OMIT the agent's own code.
-# This is less restrictive and ensures the user's application code is captured.
+source_dir = os.environ.get("KEPLOY_APP_SOURCE_DIR", os.getcwd())
+logging.info(f"Coverage will measure source files in: {source_dir}")
+
+
 cov = coverage.Coverage(
+    source=[source_dir],
     omit=[f"{agent_dir}/*"],
+    config_file=False,
+    # concurrency=True,
     data_file=None,
     auto_data=True
 )
@@ -91,12 +96,17 @@ def report_coverage(test_id: str):
     Gathers, processes, and sends the coverage data to the data socket.
     """
     data = cov.get_data()
+
+    # Diagnostic logging to see what files were measured
+    measured_files = data.measured_files()
+    logging.info(f"Measured files for test {test_id}: {measured_files}")
+    
     if not data:
         logging.warning("Coverage data is empty. No report will be sent.")
         return
 
     executed_lines_by_file = {}
-    for filename in data.measured_files():
+    for filename in measured_files:
         abs_path = os.path.abspath(filename)
         lines = data.lines(filename)
         if lines:
@@ -104,8 +114,6 @@ def report_coverage(test_id: str):
 
     if not executed_lines_by_file:
         logging.warning(f"No covered lines were found for test {test_id}. The report will be empty.")
-        # We still send the payload, even if empty, to signal completion.
-        # The Go side will handle ignoring it.
     
     payload = {
         "id": test_id,
