@@ -125,6 +125,39 @@ def test_function_fixtures_of_a_conftest_or_another_plugin_are_inside_the_window
     assert log[10:] == ["end tests/test_a.py::test_a passed", "root session teardown"], log
 
 
+def test_a_session_fixture_overridden_by_a_function_fixture_is_inside_the_window(suite, agent):
+    # The test module overrides the root conftest's session-scoped db with a
+    # function-scoped one: the test uses the nearer, function-scoped db, so
+    # it is set up after the begin and torn down before the end.
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def db():
+    mark("session db setup")
+    yield
+    mark("session db teardown")
+""")
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.fixture
+def db():
+    mark("function db setup")
+    yield
+    mark("function db teardown")
+
+def test_a(db):
+    mark("body")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=1)
+    assert agent.log() == ["claim .", "begin test_a.py::test_a", "function db setup", "body", "function db teardown",
+                           "end test_a.py::test_a passed"]
+
+
 def test_items_that_use_no_fixtures_are_not_judged_and_named_at_the_end(suite, agent):
     # A custom pytest.Item (as a linter plugin's) sets up no fixture: it runs
     # as pytest runs it, and the run's end names it.
