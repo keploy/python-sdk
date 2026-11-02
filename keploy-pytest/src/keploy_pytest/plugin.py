@@ -26,14 +26,20 @@ process at a time, and refuses a second):
     outcome of its setup and call; when keploy saw a call with no recorded
     answer, or a recorded call the test no longer made, the test errors at
     its teardown with keploy's text.
-The fixtures' scopes are pytest's, so the calls a session or module fixture
-makes are the test process's, outside every test, as pytest scopes them.
+A fixture of a wider scope (session, package, module, class) that is set
+up only once a test has begun (requested with request.getfixturevalue while
+the test runs, or through a function fixture of the same name) would have
+its calls counted as that test's: that test fails, naming the fixture and the
+fix, and the run's end lists it. pytest-django's test database
+(django_db_setup), which pytest-django sets up from inside a test for the
+django_db marker and for live_server, is set up before the test begins.
 Any answer of the agent this plugin cannot trust fails the test it belongs
 to; a claim that fails errors every test. A test ID begun a second time in
 one process (a rerun) errors with the reason; none runs unjudged.
 A test is judged through pytest's fixtures: an item that uses none (a
 custom pytest.Item, such as a linter's) runs as pytest runs it, not judged
-by keploy, and the run's end names each such item.
+by keploy, and the run's end names each such item. The lists at the run's
+end travel in pytest's reports, so pytest-xdist's controller prints them.
 """
 import os
 
@@ -47,6 +53,10 @@ _RANK = {"passed": 0, "skipped": 1, "failed": 2}
 
 # The name of the fixture that begins and ends each test.
 _FIXTURE = "_keploy"
+
+# pytest-django's session fixture that creates and migrates the test
+# database.
+_DJANGO_DB_SETUP = "django_db_setup"
 
 
 def keploy_text(reason, fallback):
@@ -97,6 +107,31 @@ def setup_rank(name2fixturedefs, name):
     return 0 if defs and defs[-1].scope != "function" else 2
 
 
+def django_db_setup_inside(item, names):
+    """Whether pytest-django sets its test database up from inside this
+    item's window, from an autouse function fixture of its own: for the
+    django_db marker (_django_db_marker requests _django_db_helper) and for
+    a test that uses live_server (_live_server_helper requests
+    transactional_db). Both reach the session fixture django_db_setup.
+    names is the item's fixture names."""
+    return item.get_closest_marker("django_db") is not None or "live_server" in names
+
+
+def has_pytest_django(config):
+    """Whether pytest-django's plugin is registered, under whatever name."""
+    return any(getattr(p, "__name__", None) == "pytest_django.plugin" for p in config.pluginmanager.get_plugins())
+
+
+def wider_text(name, wider):
+    """The failure of a test that set fixtures of a wider scope up while it
+    ran: wider is (fixture, scope) pairs."""
+    return ("keploy: %s set up a fixture of a wider scope while it ran: %s. That fixture's calls would count as this "
+            "test's, and would move to whichever test sets it up first in another run. Have it set up before the test "
+            "begins: name it in the test's arguments or a fixture's, or in an autouse fixture of its scope in "
+            "conftest.py; not with request.getfixturevalue while the test runs, and not through a function fixture of "
+            "the same name (rename one of them)" % (name, ", ".join("%s (%s scope)" % w for w in wider)))
+
+
 def xdist_controller(config):
     """Whether this process is pytest-xdist's controller, which runs no test
     (its workers do): xdist's own test (xdist.is_xdist_controller)."""
@@ -110,11 +145,21 @@ class _Open:
         self.ref = ref
         # The worst outcome of its setup and call so far.
         self.outcome = None
+        # The fixtures of a wider scope set up while it was open: (name,
+        # scope).
+        self.wider = []
 
 
 # The open test of an item, and keploy's text when its end failed it.
 _OPEN = pytest.StashKey()
 _FAILED = pytest.StashKey()
+# A line for a list at the run's end, as (report attribute, line): the
+# report of the item's current phase carries it, so that pytest-xdist's
+# controller, which sees its workers' reports, prints it too.
+_NOTE = pytest.StashKey()
+
+# The report attributes of _NOTE, in the order the run's end lists them.
+_LISTS = ("keploy_wider", "keploy_set_aside", "keploy_unjudged")
 
 
 class KeployScope:
@@ -124,18 +169,21 @@ class KeployScope:
         self.joining = joining
         self.client = None
         self.dir = ""
+        # Whether pytest-django is loaded.
+        self.django = False
+        # The open test, while one is.
+        self.window = None
         # Why no test of this process can run judged: a refused
         # KEPLOY_MOCK_AGENT, or a claim that failed.
         self.error = None
         # Every test ID begun in this process: a second begin of one fails.
         self.begun = set()
-        # Tests keploy set aside: (test ID, reason).
-        self.set_aside = []
-        # Items that use no fixtures, so are not judged: node IDs.
-        self.unjudged = []
+        # The lines of the lists at the run's end, by report attribute.
+        self.lists = {a: [] for a in _LISTS}
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_sessionstart(self, session):
+        self.django = has_pytest_django(session.config)
         if xdist_controller(session.config):
             # The controller runs no test, and claims nothing: each worker
             # claims for itself.
@@ -159,12 +207,31 @@ class KeployScope:
         info = getattr(item, "_fixtureinfo", None)
         if info is None:
             # It sets up no fixture, so _keploy never runs for it.
-            self.unjudged.append(item.nodeid)
+            item.stash[_NOTE] = ("keploy_unjudged", item.nodeid)
         else:
+            names = info.names_closure
+            early = ()
+            if self.django and _DJANGO_DB_SETUP not in names and django_db_setup_inside(item, names):
+                # pytest sets each name of the list up, by
+                # request.getfixturevalue, so the test database is set up
+                # before _keploy, as a test that requests db has it.
+                names.append(_DJANGO_DB_SETUP)
+                early = (_DJANGO_DB_SETUP,)
             # pytest sets the item's fixtures up in this list's order
             # (FixtureRequest._fillfixtures): _keploy goes right after every
             # fixture of a wider scope, before every function-scoped one.
-            info.names_closure.sort(key=lambda n: setup_rank(info.name2fixturedefs, n))
+            names.sort(key=lambda n: 0 if n in early else setup_rank(info.name2fixturedefs, n))
+        return (yield)
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(self, fixturedef, request):
+        st = self.window
+        if st is not None and fixturedef.scope != "function":
+            # Set up only now, inside a test: its calls would be the test's.
+            # A fixture that overrides another by its name is listed once.
+            w = (fixturedef.argname, fixturedef.scope)
+            if w not in st.wider:
+                st.wider.append(w)
         return (yield)
 
     @pytest.fixture(autouse=True)
@@ -191,27 +258,41 @@ class KeployScope:
             # pytest's own skip: no fixture of the test's own runs, and the
             # reason is pytest's skip reason. No end follows.
             reason = keploy_text(b.get("reason"), "keploy: set aside (the agent gave no reason)")
-            self.set_aside.append((tid, reason))
+            item.stash[_NOTE] = ("keploy_set_aside", "%s: %s" % (tid, reason))
             pytest.skip(reason)
         st = _Open(ref)
         item.stash[_OPEN] = st
+        self.window = st
         yield
         # Every function-scoped fixture set up after this one is torn down;
         # none of a wider scope is yet.
         # pytest reported the test's setup (and call, when it ran) before
         # its teardown began: st.outcome is set.
         del item.stash[_OPEN]
+        self.window = None
+        failures = []
+        if st.wider:
+            # The test fails: keploy is told so.
+            st.outcome = "failed"
+            failures.append(wider_text(ref["name"], st.wider))
+            item.stash[_NOTE] = ("keploy_wider", "%s: %s" % (tid, ", ".join("%s (%s scope)" % w for w in st.wider)))
         try:
             e = c.end(ref, st.outcome)
         except KeployError as err:
-            item.stash[_FAILED] = str(err)
-            return
-        if e.get("action") == ACTION_FAIL:
-            item.stash[_FAILED] = keploy_text(e.get("reason"), "keploy: the keploy agent failed this test and gave no reason")
+            failures.append(str(err))
+        else:
+            if e.get("action") == ACTION_FAIL:
+                failures.append(keploy_text(e.get("reason"), "keploy: the keploy agent failed this test and gave no reason"))
+        if failures:
+            item.stash[_FAILED] = "\n".join(failures)
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_runtest_makereport(self, item, call):
         rep = yield
+        note = item.stash.get(_NOTE, None)
+        if note is not None:
+            del item.stash[_NOTE]
+            setattr(rep, note[0], note[1])
         # The test is open through its setup and call reports: its end, in
         # its teardown, closes it, and sets the failure the teardown report
         # carries.
@@ -229,16 +310,31 @@ class KeployScope:
                 rep.longrepr = failure
         return rep
 
+    def pytest_runtest_logreport(self, report):
+        # Every report of this process's tests, or of a pytest-xdist
+        # controller's workers.
+        for a in _LISTS:
+            line = getattr(report, a, None)
+            if line is not None:
+                self.lists[a].append(line)
+
     def pytest_terminal_summary(self, terminalreporter):
-        if self.set_aside:
-            terminalreporter.section("keploy: %d test(s) set aside, skipped" % len(self.set_aside))
-            for tid, reason in self.set_aside:
-                terminalreporter.line("%s: %s" % (tid, reason))
-        if self.unjudged:
-            terminalreporter.section("keploy: %d item(s) not judged by keploy" % len(self.unjudged))
+        wider, set_aside, unjudged = (self.lists[a] for a in _LISTS)
+        if wider:
+            terminalreporter.section("keploy: %d test(s) failed: a fixture of a wider scope was set up inside them" % len(wider))
+            terminalreporter.line("each fixture's calls would count as the test's; set it up before the test begins "
+                                  "(each test's error says how):")
+            for line in wider:
+                terminalreporter.line(line)
+        if set_aside:
+            terminalreporter.section("keploy: %d test(s) set aside, skipped" % len(set_aside))
+            for line in set_aside:
+                terminalreporter.line(line)
+        if unjudged:
+            terminalreporter.section("keploy: %d item(s) not judged by keploy" % len(unjudged))
             terminalreporter.line("they use no pytest fixtures, so keploy-pytest cannot begin or end them; "
                                   "their calls are the test process's:")
-            for nodeid in self.unjudged:
+            for nodeid in unjudged:
                 terminalreporter.line(nodeid)
 
 

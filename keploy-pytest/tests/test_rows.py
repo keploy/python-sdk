@@ -4,6 +4,8 @@ outcomes, the report's text) and by the calls the agent got, in order."""
 import json
 import os
 
+import pytest
+
 from conftest import ok
 
 ORDER = '''
@@ -84,6 +86,7 @@ def test_claim_begin_end_order(suite, agent):
     assert claim == {"key": ".", "dir": os.path.realpath(str(suite.path))}
     assert "set aside" not in r.stdout.str()
     assert "not judged" not in r.stdout.str()
+    assert "wider scope" not in r.stdout.str()
 
 
 def autouse(label, scope="function"):
@@ -156,6 +159,242 @@ def test_a(db):
     r.assert_outcomes(passed=1)
     assert agent.log() == ["claim .", "begin test_a.py::test_a", "function db setup", "body", "function db teardown",
                            "end test_a.py::test_a passed"]
+
+
+WIDER = """
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def db():
+    mark("session db setup")
+    yield
+    mark("session db teardown")
+
+@pytest.fixture(scope="module")
+def tenant():
+    mark("module tenant setup")
+    yield
+    mark("module tenant teardown")
+"""
+
+
+def test_a_wider_fixture_set_up_inside_a_test_fails_that_test_and_is_listed(suite, agent):
+    # A session or module fixture first requested by a test's body is set
+    # up after the begin: its calls would be the test's, so the test fails
+    # with the fixture's name and the fix. Once set up, it is cached: the
+    # next test that requests it sets nothing up.
+    suite.makeconftest(WIDER)
+    suite.makepyfile(test_a="""
+from markhelp import mark
+
+def test_a(request):
+    request.getfixturevalue("db")
+    mark("a body")
+
+def test_b(request):
+    request.getfixturevalue("db")
+    mark("b body")
+
+def test_c(request):
+    request.getfixturevalue("tenant")
+    mark("c body")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=3, errors=2)
+    assert agent.log() == ["claim .", "begin test_a.py::test_a", "session db setup", "a body", "end test_a.py::test_a failed",
+                           "begin test_a.py::test_b", "b body", "end test_a.py::test_b passed",
+                           "begin test_a.py::test_c", "module tenant setup", "c body", "end test_a.py::test_c failed",
+                           "module tenant teardown", "session db teardown"]
+    r.stdout.fnmatch_lines([
+        "*ERROR at teardown of test_a*",
+        "keploy: test_a set up a fixture of a wider scope while it ran: db (session scope). That fixture's calls would "
+        "count as this test's, and would move to whichever test sets it up first in another run. Have it set up before "
+        "the test begins: name it in the test's arguments or a fixture's, or in an autouse fixture of its scope in "
+        "conftest.py; not with request.getfixturevalue while the test runs, and not through a function fixture of the "
+        "same name (rename one of them)",
+        "*ERROR at teardown of test_c*",
+        "keploy: test_c set up a fixture of a wider scope while it ran: tenant (module scope).*",
+        "*= keploy: 2 test(s) failed: a fixture of a wider scope was set up inside them =*",
+        "each fixture's calls would count as the test's; set it up before the test begins (each test's error says how):",
+        "test_a.py::test_a: db (session scope)",
+        "test_a.py::test_c: tenant (module scope)",
+    ])
+    # keploy's own failure of the same test goes beside it.
+    agent.calls.clear()
+    agent.script["/agent/scope/end"] = lambda body, n: ok(action="fail", reason="keploy: GET /price/pen had no recorded answer")
+    r = run(suite, "test_a.py::test_a")
+    r.assert_outcomes(passed=1, errors=1)
+    r.stdout.fnmatch_lines(["keploy: test_a set up a fixture of a wider scope while it ran: db (session scope).*",
+                            "keploy: GET /price/pen had no recorded answer"])
+
+
+def test_a_function_fixture_that_requests_the_wider_one_it_overrides_fails_the_test(suite, agent):
+    # def db(db): the test's function-scoped db sets the conftest's session
+    # db up from inside the test.
+    suite.makeconftest(WIDER)
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.fixture
+def db(db):
+    mark("function db setup")
+    yield
+    mark("function db teardown")
+
+def test_a(db):
+    mark("body")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=1, errors=1)
+    assert agent.log() == ["claim .", "begin test_a.py::test_a", "session db setup", "function db setup", "body",
+                           "function db teardown", "end test_a.py::test_a failed", "session db teardown"]
+    r.stdout.fnmatch_lines(["keploy: test_a set up a fixture of a wider scope while it ran: db (session scope).*"
+                            "(rename one of them)"])
+
+
+def test_class_and_package_fixtures_are_outside_the_window(suite, agent):
+    pkg = suite.path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "conftest.py").write_text(autouse("package", scope="package"))
+    (pkg / "test_a.py").write_text("""
+import pytest
+from markhelp import mark
+
+class TestA:
+    @pytest.fixture(scope="class")
+    def cls_fix(self):
+        mark("class setup")
+        yield
+        mark("class teardown")
+
+    def test_a(self, cls_fix):
+        mark("body")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=1)
+    assert agent.log() == ["claim .", "package setup", "class setup", "begin pkg/test_a.py::TestA::test_a", "body",
+                           "end pkg/test_a.py::TestA::test_a passed", "class teardown", "package teardown"]
+
+
+DJANGO_SETTINGS = """
+SECRET_KEY = "rows"
+INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
+USE_TZ = True
+"""
+
+
+def test_pytest_djangos_test_database_is_set_up_before_the_test_begins(suite, agent):
+    # pytest-django sets its test database (the session fixture
+    # django_db_setup) up from inside a test, for the django_db marker and
+    # for live_server; for db, pytest sets it up before the test.
+    suite.makepyfile(settings=DJANGO_SETTINGS)
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def django_db_setup(django_db_setup):
+    mark("test database created")
+    yield
+    mark("test database torn down")
+""")
+    body = """
+    from django.contrib.auth.models import User
+    mark("users %d" % User.objects.count())
+"""
+    suite.makepyfile(test_marker="import pytest\nfrom markhelp import mark\n\n@pytest.mark.django_db\ndef test_one():" + body,
+                     test_transaction="import pytest\nfrom markhelp import mark\n\n@pytest.mark.django_db(transaction=True)\n"
+                                      "def test_one():" + body,
+                     test_db="from markhelp import mark\n\ndef test_one(db):" + body,
+                     test_both="import pytest\nfrom markhelp import mark\n\n@pytest.mark.django_db\n"
+                               "def test_one(db, request):" + body +
+                               "    assert request.fixturenames.count('django_db_setup') == 1\n",
+                     test_live="from markhelp import mark\n\ndef test_one(live_server):" + body)
+    for f in ("test_marker.py", "test_transaction.py", "test_db.py", "test_both.py", "test_live.py"):
+        agent.calls.clear()
+        r = run(suite, "--ds=settings", f)
+        r.assert_outcomes(passed=1)
+        assert agent.log() == ["claim .", "test database created", "begin %s::test_one" % f, "users 0",
+                               "end %s::test_one passed" % f, "test database torn down"], f
+    # A fixture that overrides pytest-django's db by its name: pytest 9
+    # follows the override's own requests to django_db_setup, and sets it up
+    # before the test; pytest 8 does not, so the test fails and names it.
+    suite.makepyfile(test_override="import pytest\nfrom markhelp import mark\n\n@pytest.fixture\ndef db(db):\n    pass\n\n"
+                                   "def test_one(db):" + body)
+    agent.calls.clear()
+    r = run(suite, "--ds=settings", "test_override.py")
+    log = agent.log()
+    if pytest.version_tuple >= (9,):
+        r.assert_outcomes(passed=1)
+        assert log == ["claim .", "test database created", "begin test_override.py::test_one", "users 0",
+                       "end test_override.py::test_one passed", "test database torn down"], log
+    else:
+        r.assert_outcomes(passed=1, errors=1)
+        assert log == ["claim .", "begin test_override.py::test_one", "test database created", "users 0",
+                       "end test_override.py::test_one failed", "test database torn down"], log
+        line = [x for x in r.outlines if x.startswith("keploy: test_one set up a fixture of a wider scope")]
+        assert len(line) == 1 and line[0].count("django_db_setup (session scope)") == 1, r.outlines
+
+
+def test_without_pytest_django_its_marker_and_live_server_are_plain(suite, agent):
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "django_db: a marker of the suite's own")
+
+@pytest.fixture
+def live_server():
+    mark("own live_server")
+""")
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.mark.django_db
+def test_m():
+    mark("m body")
+
+def test_l(live_server):
+    mark("l body")
+""")
+    r = run(suite, "-p", "no:django")
+    r.assert_outcomes(passed=2)
+    assert agent.log() == ["claim .", "begin test_a.py::test_m", "m body", "end test_a.py::test_m passed",
+                           "begin test_a.py::test_l", "own live_server", "l body", "end test_a.py::test_l passed"]
+
+
+def test_the_lists_at_the_runs_end_come_through_pytest_xdist(suite, agent):
+    # pytest-xdist's controller prints the lists from its workers' reports.
+    agent.script["/agent/scope/begin"] = lambda body, n: ok(action="skip", reason="quarantined/flaky: set aside by a row") \
+        if body["name"] == "test_b" else ok()
+    suite.makeconftest(CUSTOM + WIDER)
+    (suite.path / "a.spec").write_text("x\n")
+    suite.makepyfile(test_a="""
+def test_a(request):
+    request.getfixturevalue("db")
+
+def test_b():
+    pass
+""")
+    for args in ((), ("-n", "1")):
+        r = run(suite, *args)
+        r.assert_outcomes(passed=2, skipped=1, errors=1)
+        r.stdout.fnmatch_lines([
+            "*= keploy: 1 test(s) failed: a fixture of a wider scope was set up inside them =*",
+            "each fixture's calls would count as the test's; set it up before the test begins (each test's error says how):",
+            "test_a.py::test_a: db (session scope)",
+            "*= keploy: 1 test(s) set aside, skipped =*",
+            "test_a.py::test_b: keploy: quarantined/flaky: set aside by a row",
+            "*= keploy: 1 item(s) not judged by keploy =*",
+            "they use no pytest fixtures, so keploy-pytest cannot begin or end them; their calls are the test process's:",
+            "a.spec::spec1",
+        ])
 
 
 def test_items_that_use_no_fixtures_are_not_judged_and_named_at_the_end(suite, agent):
