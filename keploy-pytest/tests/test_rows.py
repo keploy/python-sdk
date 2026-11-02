@@ -319,6 +319,70 @@ def test_p(request):
                             "pkg/test_a.py::test_p: pfix (package scope)"])
 
 
+CLASS_FIXTURE = """
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="class")
+%sdef cls():
+    mark("cls setup")
+    yield
+    mark("cls teardown")
+"""
+
+CLASS_FIXTURE_TESTS = """
+from markhelp import mark
+
+def test_a(cls):
+    mark("a body")
+
+def test_b(request):
+    request.getfixturevalue("cls")
+    mark("b body")
+
+class TestC:
+    def test_c(self, cls):
+        mark("c body")
+"""
+
+# A class-scoped fixture used by tests outside any class, then by a test in
+# a class.
+CLASS_FIXTURE_LOG = [
+    "claim .",
+    "begin test_a.py::test_a", "cls setup", "a body", "cls teardown", "end test_a.py::test_a passed",
+    "begin test_a.py::test_b", "cls setup", "b body", "cls teardown", "end test_a.py::test_b passed",
+    "cls setup", "begin test_a.py::TestC::test_c", "c body", "end test_a.py::TestC::test_c passed", "cls teardown",
+]
+
+
+def test_a_class_fixture_used_outside_a_class_is_inside_the_test(suite, agent):
+    # pytest sets a class-scoped fixture up for a test outside any class
+    # itself, and tears it down with it (a class scope with no class falls
+    # back to the test): its calls are that test's, inside its window, and
+    # the test does not fail for setting it up while it runs. For a test in
+    # a class it is the class's, outside the window.
+    suite.makeconftest(CLASS_FIXTURE % "")
+    suite.makepyfile(test_a=CLASS_FIXTURE_TESTS)
+    r = run(suite)
+    r.assert_outcomes(passed=3)
+    assert agent.log() == CLASS_FIXTURE_LOG
+    assert "wider scope" not in r.stdout.str()
+
+
+def test_an_async_class_fixture_used_outside_a_class_is_inside_the_test(suite, agent):
+    # pytest-asyncio runs an async class-scoped fixture in its loop of the
+    # class loop scope, also class-scoped: for a test outside any class both
+    # are set up for the test itself, inside its window.
+    if asyncio_version() < (1, 0):
+        pytest.skip("pytest-asyncio before 1.0 refuses a class loop scope for a test outside a class")
+    suite.makeconftest(CLASS_FIXTURE % "async ")
+    suite.makepyfile(test_a=CLASS_FIXTURE_TESTS)
+    r = run(suite, "-o", "asyncio_mode=auto")
+    r.assert_outcomes(passed=3)
+    assert agent.log() == CLASS_FIXTURE_LOG
+    assert "wider scope" not in r.stdout.str()
+
+
 def test_a_wider_fixture_that_overrides_one_of_its_name_is_listed_once(suite, agent):
     # A session db over the conftest's session db, first requested by the
     # test's body: both are set up inside the test, under one name and scope.
@@ -476,10 +540,34 @@ def asyncio_version():
     return tuple(int(x) for x in version("pytest-asyncio").split(".")[:2])
 
 
+def asyncio_loops():
+    """The session fixture of pytest-asyncio's loops a row's conftest.py
+    overrides to mark its setup, chosen by pytest-asyncio's own attributes as
+    keploy-pytest reads them, as (name, every, sync): whether an async
+    fixture or test of every loop scope reaches it, or only of the session
+    loop scope; and whether pytest-asyncio runs a sync fixture marked with
+    pytest_asyncio.fixture in a loop.
+      - 0.23 to 1.0 (a _HOLDER set) run each async fixture in an event loop:
+        the session loop scope's is _session_event_loop. They run a marked
+        sync fixture as it is.
+      - 1.1 and later run fixtures, the marked sync ones included, in event
+        loop runners. 1.4's runners, of every loop scope, request the session
+        fixture _asyncio_loop_factory. 1.1 to 1.3's request only
+        event_loop_policy, an autouse fixture set up before every run's first
+        test whatever the test needs, so a mark there could not fail: their
+        session loop scope's runner, _session_scoped_runner, is marked."""
+    import pytest_asyncio.plugin as plugin
+    if hasattr(plugin, "_HOLDER"):
+        return "_session_event_loop", False, False
+    if hasattr(plugin, "_asyncio_loop_factory"):
+        return "_asyncio_loop_factory", True, True
+    return "_session_scoped_runner", False, True
+
+
 def test_pytest_asyncio_tests_and_fixtures_begin_after_their_event_loop(suite, agent):
-    # pytest-asyncio adds its event loop runner (1.x) or loop (0.23 to 0.26)
-    # to an async test's names as the test is set up, and requests one by
-    # name as it sets an async fixture up (0.24 and later). Its loops, of
+    # pytest-asyncio adds its event loop runner (1.1 and later) or loop (0.23
+    # to 1.0) to an async test's names as the test is set up, and requests
+    # one by name as it sets an async fixture up (0.24 and later). Its loops, of
     # every loop scope, are set up before the test begins; the async fixture
     # and the body run inside.
     # Each file runs in a process of its own, so each is the first to need
@@ -530,8 +618,9 @@ async def client():
             "end %s::test_one passed" % f], (f, agent.log())
     if asyncio_version() < (0, 24):
         return
-    # pytest-asyncio runs an async fixture in the event loop (0.24 to 0.26)
-    # or the event loop runner (1.x) of the fixture's own loop scope, which
+    # pytest-asyncio runs an async fixture in the event loop (0.24 to 1.0)
+    # or the event loop runner (1.1 and later) of the fixture's own loop
+    # scope, which
     # it requests by name as it sets the fixture up: the one
     # pytest_asyncio.fixture gives it, which wins over the
     # asyncio_default_fixture_loop_scope setting, else that setting. That
@@ -554,20 +643,13 @@ async def client():
 
 
 def test_pytest_asyncio_sets_no_event_loop_up_for_a_test_without_async_fixtures(suite, agent):
-    if asyncio_version() < (1, 0):
-        pytest.skip("pytest-asyncio before 1.0 has no event loop runners")
-    # The loop factory every runner of pytest-asyncio's requests, overridden
-    # to mark its setup: set up before the async test begins, and never for
-    # the test that has no async fixture.
-    suite.makeconftest("""
-import pytest
-from markhelp import mark
-
-@pytest.fixture(scope="session")
-def _asyncio_loop_factory(_asyncio_loop_factory):
-    mark("loop factory")
-    return _asyncio_loop_factory
-""")
+    # pytest-asyncio's session fixture of its loops (asyncio_loops), marked:
+    # set up before the first async test that reaches it begins (a test of
+    # the session loop scope, or any async test on 1.4), and never for the
+    # test that has no async fixture.
+    name, every, _ = asyncio_loops()
+    loop = "loop_scope" if asyncio_version() >= (0, 24) else "scope"
+    suite.makeconftest(session_loop_mark())
     suite.makepyfile(test_a="""
 import pytest
 from markhelp import mark
@@ -585,20 +667,25 @@ def test_sync(fn):
 
 async def test_async():
     mark("async body")
-""")
+
+@pytest.mark.asyncio(%s="session")
+async def test_session():
+    mark("session body")
+""" % loop)
     r = run(suite, "-o", "asyncio_mode=auto")
-    r.assert_outcomes(passed=2)
+    r.assert_outcomes(passed=3)
+    marked = ["session loop"]
     assert agent.log() == ["claim .", "module setup", "begin test_a.py::test_sync", "function setup", "sync body",
-                           "end test_a.py::test_sync passed", "loop factory", "begin test_a.py::test_async", "async body",
-                           "end test_a.py::test_async passed"]
+                           "end test_a.py::test_sync passed"] + (marked if every else []) + [
+        "begin test_a.py::test_async", "async body", "end test_a.py::test_async passed"] + ([] if every else marked) + [
+        "begin test_a.py::test_session", "session body", "end test_a.py::test_session passed"], (name, agent.log())
 
 
 def session_loop_mark():
     """A conftest.py that marks, as "session loop", the setup of
-    pytest-asyncio's session fixture of its loops: its session event loop
-    (0.23 to 0.26), or the loop factory every event loop runner requests
-    (1.x)."""
-    name = "_asyncio_loop_factory" if asyncio_version() >= (1, 0) else "_session_event_loop"
+    pytest-asyncio's session fixture of its loops that asyncio_loops
+    names."""
+    name = asyncio_loops()[0]
     return """
 import pytest
 from markhelp import mark
@@ -611,15 +698,17 @@ def %s(%s):
 
 
 def test_a_sync_fixture_marked_with_pytest_asyncio_fixture(suite, agent):
-    # pytest-asyncio 1.x runs a sync fixture marked with
+    # pytest-asyncio 1.1 and later run a sync fixture marked with
     # pytest_asyncio.fixture in the event loop runner of its loop scope too,
-    # which it requests by name as it sets the fixture up: the runner, and
-    # the session loop it needs, are set up before the first test begins.
-    # 0.23 to 0.26 run such a fixture as it is, and set no loop up.
+    # which they request by name as they set the fixture up: the runner of a
+    # wider loop scope, and the session fixture of the loops it reaches, are
+    # set up before the first test begins. 0.23 to 1.0 run such a fixture as
+    # it is, and set no loop up.
     suite.makeconftest(session_loop_mark())
+    _, every, sync = asyncio_loops()
     loops = [""] + (["loop_scope='session'"] if asyncio_version() >= (0, 24) else [])
-    loop = ["session loop"] if asyncio_version() >= (1, 0) else []
     for i, scope in enumerate(loops):
+        loop = ["session loop"] if sync and (every or "session" in scope) else []
         f = "test_marked%d.py" % i
         suite.makepyfile(**{f[:-3]: """
 import pytest_asyncio

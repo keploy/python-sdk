@@ -25,10 +25,11 @@ jobs:
       matrix:
         # The oldest pytest this plugin supports (pyproject.toml) on the
         # oldest Python it supports, the last pytest 8, and pytest 9 on the
-        # newest Python. pytest-asyncio 1.x needs Python 3.10 and pytest 8.4:
-        # the 3.9 leg runs the 0.23 line. The 3.11 leg runs the last 0.x
-        # line (0.24 to 0.26 request an async fixture's event loop by name),
-        # which needs pytest 8.2 to 8.x.
+        # newest Python. pytest-asyncio 1.4 needs Python 3.10 and pytest 8.4:
+        # the 3.9 leg runs the 0.23 line. The 3.11 leg runs 0.26, of the
+        # line that requests an async fixture's event loop by name (0.24 to
+        # 1.0), which needs pytest 8.2 to 8.x. 1.1 and later run fixtures in
+        # event loop runners.
         include:
           - { python: "3.9", pytest: "8.0.2", pytest-django: "4.11.1", django: "4.2.30", pytest-asyncio: "0.23.8" }
           - { python: "3.11", pytest: "8.3.5", pytest-django: "4.11.1", django: "5.2.18", pytest-asyncio: "0.26.0" }

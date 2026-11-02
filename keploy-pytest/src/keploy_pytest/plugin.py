@@ -17,8 +17,9 @@ process at a time, and refuses a second):
     keploy's project folder (KEPLOY_MOCK_PROJECT), which its test files are
     named from; the current folder only when keploy names none;
   - each test begins (POST /agent/scope/begin) once every fixture of a
-    wider scope (session, package, module, class) it reaches is set up, and
-    before any of its own function-scoped fixtures, whoever declares them
+    wider scope (session, package, module, and class for a test in a class)
+    it reaches is set up, and before any of its own function-scoped
+    fixtures, whoever declares them
     (the test module, a conftest.py, another plugin); a test keploy set aside
     is skipped by pytest itself, with keploy's reason;
   - the test ends (POST /agent/scope/end) once its own function-scoped
@@ -30,12 +31,16 @@ The fixtures of a wider scope a test reaches are read from pytest's own
 fixture graph as the test is set up: the test's fixture names, including
 those a plugin adds once the test is collected (pytest-asyncio's event loop,
 or its runner), and each fixture's arguments, through any fixture that
-overrides another by its name. Three fixtures are set up by name from inside
+overrides another by its name. A class-scoped fixture is of a wider scope
+only for a test in a class: for a test outside one, pytest sets it up and
+tears it down with the test, as a function-scoped one, and its calls are the
+test's. Three fixtures are set up by name from inside
 a test, outside that graph, and are followed too: pytest's
 doctest_namespace, for a doctest; pytest-django's test database
 (django_db_setup), for the django_db marker and for live_server; and
-pytest-asyncio's event loop (0.24 to 0.26) or event loop runner (1.x) of the
-loop scope of a fixture it runs, which it requests as it sets the fixture up.
+pytest-asyncio's event loop (0.24 to 1.0) or event loop runner (1.1 and
+later) of the loop scope of a fixture it runs, which it requests as it sets
+the fixture up.
 A fixture of a wider scope that is still set up only once a test has begun
 (requested with request.getfixturevalue while the test runs, or one that
 only a function fixture of the same name reaches, def db(db)) would have its
@@ -75,6 +80,15 @@ _DOCTEST_NAMESPACE = "doctest_namespace"
 _WIDER = ("session", "package", "module", "class")
 
 
+def wider_scopes(item):
+    """The scopes wider than the function for item, widest first. The class
+    scope is one only for an item in a class (a pytest.Class, a unittest
+    TestCase's included), pytest's own rule for that scope's node: outside a
+    class, pytest sets a class-scoped fixture up for the item itself and
+    tears it down with it, as a function-scoped one."""
+    return _WIDER if item.getparent(pytest.Class) is not None else _WIDER[:-1]
+
+
 def keploy_text(reason, fallback):
     """keploy's reason as the test shows it: once prefixed with "keploy: " (a
     judging reason from the agent already is; a skip reason, "<class>/<reason>:
@@ -108,19 +122,19 @@ def outcome_of(report):
     return report.outcome if report.outcome in _RANK else "failed"
 
 
-def setup_rank(name2fixturedefs, name):
+def setup_rank(name2fixturedefs, name, wider):
     """Where a fixture name goes in the order pytest sets an item's fixtures
-    up: those of a wider scope than the function first, then this plugin's,
-    then the rest (function-scoped ones, and names with no fixture, such as
-    request). pytest's own order puts wider scopes first, and within the
-    function scope a root conftest's or another plugin's autouse fixture
-    before this plugin's."""
+    up: those of a scope in wider (the item's wider_scopes) first, then this
+    plugin's, then the rest (function-scoped ones, a class-scoped one outside
+    a class, and names with no fixture, such as request). pytest's own order
+    puts wider scopes first, and within the function scope a root conftest's
+    or another plugin's autouse fixture before this plugin's."""
     if name == _FIXTURE:
         return 1
     defs = name2fixturedefs.get(name)
     # The fixture the item uses is the last of its definitions (the one
     # nearest the test), as in pytest's own sort by scope.
-    return 0 if defs and defs[-1].scope != "function" else 2
+    return 0 if defs and defs[-1].scope in wider else 2
 
 
 def django_db_setup_inside(item, names):
@@ -174,25 +188,28 @@ def asyncio_loop(fd, request, plugin):
     """The fixture pytest-asyncio (plugin, None when it is not loaded)
     requests by name as it sets fd up, outside fd's arguments, or None.
     request is the test's request. It is pytest-asyncio's own rule:
-      - 0.24 to 0.26 put a wrapper in place of each async fixture they run
+      - 0.24 to 1.0 put a wrapper in place of each async fixture they run
         when they collect it, and keep those fixtures in a set of their own
         (_HOLDER). As the wrapper sets such a fixture up, it requests the
         event loop that pytest-asyncio's own
         _get_event_loop_fixture_id_for_async_fixture names, from the loop
-        scope it resolved for the fixture as it wrapped it: event_loop for
-        the function loop scope, else the loop of the test's collector of
-        that scope (_session_event_loop, <module>::<event_loop>...). That
+        scope it resolved for the fixture as it wrapped it: on 0.24 to 0.26,
+        event_loop for the function loop scope, else the loop of the test's
+        collector of that scope (_session_event_loop,
+        <module>::<event_loop>...); on 1.0, _<loop scope>_event_loop. That
         set and that function, called with the fixture's own function as the
-        wrapper calls it, are read here. Any other fixture (a sync one marked with
-        pytest_asyncio.fixture included) is run as it is, and requests no
-        loop.
-      - 1.x requests, for a fixture marked with pytest_asyncio.fixture
-        (an async or a sync one), and, outside strict mode, for any
-        coroutine or async generator function, the event loop runner of
-        the fixture's loop scope, _<loop scope>_scoped_runner: the loop
-        scope pytest_asyncio.fixture gave the fixture, else the
+        wrapper calls it, are read here. Any other fixture (a sync one
+        marked with pytest_asyncio.fixture included) is run as it is, and
+        requests no loop.
+      - 1.1 and later request, for a fixture marked with
+        pytest_asyncio.fixture (an async or a sync one), and, outside strict
+        mode, for any coroutine or async generator function, the event loop
+        runner of the fixture's loop scope, _<loop scope>_scoped_runner: the
+        loop scope pytest_asyncio.fixture gave the fixture, else the
         asyncio_default_fixture_loop_scope setting, else the fixture's
-        scope.
+        scope. Each runner requests the session fixture event_loop_policy
+        (an autouse one), and on 1.4 _asyncio_loop_factory too: the walk
+        follows the runner's arguments as any fixture's.
       - 0.23 gives an async fixture its loop as an argument when it
         collects it, inside pytest's graph, and has no runner: the runner's
         name names no fixture there, and the walk passes it by."""
@@ -210,9 +227,10 @@ def asyncio_loop(fd, request, plugin):
     return "_%s_scoped_runner" % (getattr(fd.func, "_loop_scope", None) or default or fd.scope)
 
 
-def wider_reached(names, defs_of, requested):
-    """The fixtures of a wider scope than the function that pytest sets up
-    for these fixture names, widest scope first, read from pytest's own graph:
+def wider_reached(names, defs_of, requested, wider):
+    """The fixtures of a scope in wider (the item's wider_scopes) that pytest
+    sets up for these fixture names, widest scope first, read from pytest's
+    own graph:
     each name's nearest definition (defs_of(name)[-1], the one pytest gives a
     test), each fixture's arguments, and, where a fixture requests its own
     name, the definition it overrides (pytest's own chain). A fixture also
@@ -235,8 +253,8 @@ def wider_reached(names, defs_of, requested):
         if id(fd) in seen:
             continue
         seen.add(id(fd))
-        if depth == 1 and fd.scope in _WIDER:
-            found[name] = _WIDER.index(fd.scope)
+        if depth == 1 and fd.scope in wider:
+            found[name] = wider.index(fd.scope)
         args = list(fd.argnames)
         extra = requested(fd)
         if extra is not None:
@@ -284,8 +302,10 @@ def xdist_controller(config):
 class _Open:
     """A test begun and not yet ended."""
 
-    def __init__(self, ref):
+    def __init__(self, ref, scopes):
         self.ref = ref
+        # The scopes wider than the function for its item (wider_scopes).
+        self.scopes = scopes
         # The worst outcome of its setup and call so far.
         self.outcome = None
         # The fixtures of a wider scope set up while it was open: (name,
@@ -358,13 +378,14 @@ class KeployScope:
             # pytest sets the item's fixtures up in this list's order
             # (FixtureRequest._fillfixtures): _keploy goes right after every
             # fixture of a wider scope, before every function-scoped one.
-            info.names_closure.sort(key=lambda n: setup_rank(info.name2fixturedefs, n))
+            wider = wider_scopes(item)
+            info.names_closure.sort(key=lambda n: setup_rank(info.name2fixturedefs, n, wider))
         return (yield)
 
     @pytest.hookimpl(wrapper=True)
     def pytest_fixture_setup(self, fixturedef, request):
         st = self.window
-        if st is not None and fixturedef.scope != "function":
+        if st is not None and fixturedef.scope in st.scopes:
             # Set up only now, inside a test: its calls would be the test's.
             # A fixture that overrides another by its name is listed once.
             w = (fixturedef.argname, fixturedef.scope)
@@ -391,7 +412,8 @@ class KeployScope:
         # begins, the ones a plugin added to its names since pytest sorted
         # them included: their calls belong to the test process.
         names = list(item.fixturenames) + by_name(item, self.django)
-        for name in wider_reached(names, defs_lookup(item), lambda fd: asyncio_loop(fd, request, self.asyncio)):
+        wider = wider_scopes(item)
+        for name in wider_reached(names, defs_lookup(item), lambda fd: asyncio_loop(fd, request, self.asyncio), wider):
             request.getfixturevalue(name)
         self.begun.add(tid)
         try:
@@ -404,7 +426,7 @@ class KeployScope:
             reason = keploy_text(b.get("reason"), "keploy: set aside (the agent gave no reason)")
             item.stash[_NOTE] = ("keploy_set_aside", "%s: %s" % (tid, reason))
             pytest.skip(reason)
-        st = _Open(ref)
+        st = _Open(ref, wider)
         item.stash[_OPEN] = st
         self.window = st
         yield
