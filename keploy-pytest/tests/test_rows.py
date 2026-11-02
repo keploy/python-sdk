@@ -102,6 +102,22 @@ def test_file_named_from_keploys_project_folder(suite, agent, monkeypatch):
     assert agent.log()[1:] == ["begin sub/test_x.py::test_x", "end sub/test_x.py::test_x passed"]
 
 
+def test_file_named_through_a_symlink(suite, agent, monkeypatch):
+    # pytest is given the test file by a path through the project's
+    # symlink (the working directory is no symlink): the file is named from
+    # where it is, under the project's real folder.
+    real = suite.path / "real"
+    real.mkdir()
+    (real / "sub").mkdir()
+    (real / "sub" / "test_x.py").write_text("def test_x():\n    pass\n")
+    link = suite.path / "link"
+    link.symlink_to(real)
+    monkeypatch.setenv("KEPLOY_MOCK_PROJECT", str(link))
+    r = suite.runpytest_subprocess("-p", "no:cacheprovider", "link/sub/test_x.py")
+    r.assert_outcomes(passed=1)
+    assert agent.log()[1:] == ["begin sub/test_x.py::test_x", "end sub/test_x.py::test_x passed"]
+
+
 def test_dir_is_the_working_directory_without_a_project(suite, agent, monkeypatch):
     monkeypatch.delenv("KEPLOY_MOCK_PROJECT")
     suite.makepyfile(test_a="def test_a():\n    pass\n")
@@ -125,6 +141,22 @@ def test_a():
         if path != "/mark":
             assert headers.get("Authorization") == "Bearer s3cret", path
             assert headers.get("Content-Type") == "application/json", path
+
+
+def test_claim_comes_before_the_suites_sessionstart(suite, agent):
+    # A suite's own pytest_sessionstart (one that starts the service under
+    # test, say) runs after the claim: what it starts inherits the marker,
+    # and joins as a member.
+    suite.makeconftest('''
+import os
+from markhelp import mark
+
+def pytest_sessionstart(session):
+    mark("suite sessionstart " + ("claimer" if os.environ.get("KEPLOY_TEST_PID") == str(os.getpid()) else "unclaimed"))
+''')
+    suite.makepyfile(test_a="def test_a():\n    pass\n")
+    run(suite).assert_outcomes(passed=1)
+    assert agent.log() == ["claim .", "suite sessionstart claimer", "begin test_a.py::test_a", "end test_a.py::test_a passed"]
 
 
 def test_member_of_a_claimed_process_is_inert(suite, agent, monkeypatch):
@@ -259,9 +291,7 @@ def test_marked_skip():
     assert "begin test_a.py::test_marked_skip" not in agent.log()
 
 
-def test_rerun_fails_closed(suite, agent):
-    # What a rerun plugin does: run an item's protocol again.
-    suite.makeconftest('''
+RERUN = '''
 from _pytest.runner import runtestprotocol
 
 def pytest_runtest_protocol(item, nextitem):
@@ -270,13 +300,32 @@ def pytest_runtest_protocol(item, nextitem):
     runtestprotocol(item, nextitem=nextitem)
     item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
     return True
-''')
+'''
+
+
+def test_rerun_fails_closed(suite, agent):
+    # What a rerun plugin does: run an item's protocol again.
+    suite.makeconftest(RERUN)
     suite.makepyfile(test_a="def test_a():\n    pass\n")
     r = run(suite)
     r.assert_outcomes(passed=1, errors=1)
     assert agent.log() == ["claim .", "begin test_a.py::test_a", "end test_a.py::test_a passed"]
     r.stdout.fnmatch_lines(["keploy: test_a in test_a.py would begin a second time, and keploy names a test by its file and name: "
                             "run each test once (no reruns, such as pytest-rerunfailures' --reruns)"])
+
+
+def test_rerun_after_keploy_failed_the_first_run(suite, agent):
+    # keploy's text fails the run whose end got it, once: the rerun errors
+    # with its own reason only.
+    agent.script["/agent/scope/end"] = lambda body, n: ok(action="fail", reason="keploy: GET /price/pen had no recorded answer")
+    suite.makeconftest(RERUN)
+    suite.makepyfile(test_a="def test_a():\n    pass\n")
+    r = run(suite)
+    r.assert_outcomes(passed=1, errors=2)
+    assert agent.log() == ["claim .", "begin test_a.py::test_a", "end test_a.py::test_a passed"]
+    assert r.stdout.str().count("keploy: GET /price/pen had no recorded answer") == 1
+    r.stdout.fnmatch_lines(["*ERROR at teardown of test_a*", "keploy: GET /price/pen had no recorded answer",
+                            "*ERROR at setup of test_a*", "keploy: test_a in test_a.py would begin a second time*"])
 
 
 def test_claim_404_names_the_switch(suite, agent):
