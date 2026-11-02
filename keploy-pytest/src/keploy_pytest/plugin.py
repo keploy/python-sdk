@@ -18,8 +18,9 @@ process at a time, and refuses a second):
     named from; the current folder only when keploy names none;
   - each test begins (POST /agent/scope/begin) once the fixtures of a wider
     scope it uses (session, package, module, class) are set up, before any
-    of its own function-scoped fixtures; a test keploy set aside is skipped
-    by pytest itself, with keploy's reason;
+    of its own function-scoped fixtures, whoever declares them (the test
+    module, a conftest.py, another plugin); a test keploy set aside is
+    skipped by pytest itself, with keploy's reason;
   - the test ends (POST /agent/scope/end) once its own function-scoped
     fixtures are torn down, before any fixture of a wider scope is, with the
     outcome of its setup and call; when keploy saw a call with no recorded
@@ -30,6 +31,9 @@ makes are the test process's, outside every test, as pytest scopes them.
 Any answer of the agent this plugin cannot trust fails the test it belongs
 to; a claim that fails errors every test. A test ID begun a second time in
 one process (a rerun) errors with the reason; none runs unjudged.
+A test is judged through pytest's fixtures: an item that uses none (a
+custom pytest.Item, such as a linter's) runs as pytest runs it, not judged
+by keploy, and the run's end names each such item.
 """
 import os
 
@@ -40,6 +44,9 @@ from .join import ENV_TEST_PID, decide
 
 # The outcomes keploy's end takes, from best to worst.
 _RANK = {"passed": 0, "skipped": 1, "failed": 2}
+
+# The name of the fixture that begins and ends each test.
+_FIXTURE = "_keploy"
 
 
 def keploy_text(reason, fallback):
@@ -73,6 +80,21 @@ def outcome_of(report):
     failure, xfail, is pytest's skipped; a strict unexpected pass its
     failed)."""
     return report.outcome if report.outcome in _RANK else "failed"
+
+
+def setup_rank(name2fixturedefs, name):
+    """Where a fixture name goes in the order pytest sets an item's fixtures
+    up: those of a wider scope than the function first, then this plugin's,
+    then the rest (function-scoped ones, and names with no fixture, such as
+    request). pytest's own order puts wider scopes first, and within the
+    function scope a root conftest's or another plugin's autouse fixture
+    before this plugin's."""
+    if name == _FIXTURE:
+        return 1
+    defs = name2fixturedefs.get(name)
+    # The fixture the item uses is the last of its definitions (the one
+    # nearest the test), as in pytest's own sort by scope.
+    return 0 if defs and defs[-1].scope != "function" else 2
 
 
 def xdist_controller(config):
@@ -109,6 +131,8 @@ class KeployScope:
         self.begun = set()
         # Tests keploy set aside: (test ID, reason).
         self.set_aside = []
+        # Items that use no fixtures, so are not judged: node IDs.
+        self.unjudged = []
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_sessionstart(self, session):
@@ -129,6 +153,19 @@ class KeployScope:
             return
         os.environ[ENV_TEST_PID] = str(os.getpid())
         self.client, self.dir = client, d
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_setup(self, item):
+        info = getattr(item, "_fixtureinfo", None)
+        if info is None:
+            # It sets up no fixture, so _keploy never runs for it.
+            self.unjudged.append(item.nodeid)
+        else:
+            # pytest sets the item's fixtures up in this list's order
+            # (FixtureRequest._fillfixtures): _keploy goes right after every
+            # fixture of a wider scope, before every function-scoped one.
+            info.names_closure.sort(key=lambda n: setup_rank(info.name2fixturedefs, n))
+        return (yield)
 
     @pytest.fixture(autouse=True)
     def _keploy(self, request):
@@ -193,11 +230,16 @@ class KeployScope:
         return rep
 
     def pytest_terminal_summary(self, terminalreporter):
-        if not self.set_aside:
-            return
-        terminalreporter.section("keploy: %d test(s) set aside, skipped" % len(self.set_aside))
-        for tid, reason in self.set_aside:
-            terminalreporter.line("%s: %s" % (tid, reason))
+        if self.set_aside:
+            terminalreporter.section("keploy: %d test(s) set aside, skipped" % len(self.set_aside))
+            for tid, reason in self.set_aside:
+                terminalreporter.line("%s: %s" % (tid, reason))
+        if self.unjudged:
+            terminalreporter.section("keploy: %d item(s) not judged by keploy" % len(self.unjudged))
+            terminalreporter.line("they use no pytest fixtures, so keploy-pytest cannot begin or end them; "
+                                  "their calls are the test process's:")
+            for nodeid in self.unjudged:
+                terminalreporter.line(nodeid)
 
 
 

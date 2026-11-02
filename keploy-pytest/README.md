@@ -6,8 +6,10 @@ This plugin tells keploy where each test begins and ends. Through it, keploy ski
 
 ## Use
 
+The package is not published yet: install it from this folder.
+
 ```sh
-pip install keploy-pytest
+pip install /path/to/python-sdk/keploy-pytest
 ```
 
 It needs Python 3.9 or later and pytest 8 or later. Its rows run on Python 3.9 with pytest 8.0, Python 3.12 with pytest 8.4 and Python 3.14 with pytest 9. Its e2e lane (`e2e/lane.sh`) installs the built wheel into a small suite and runs it under keploy 3.8.106: recorded with its provider up, replayed with the provider stopped.
@@ -44,12 +46,16 @@ With `KEPLOY_MOCK_AGENT` unset or `off`, the plugin registers nothing, and pytes
 
 - **Claim.** The pytest process claims keploy's run when its session starts (`POST /agent/instance`), before pytest collects, and so imports, any test module. The claim's key is `.`, and it names the project directory keploy names (`KEPLOY_MOCK_PROJECT`) as the folder the test files are named from (the current directory only when keploy names none). After the claim, `KEPLOY_TEST_PID` names the pytest process, so a process a test starts (the service under test, a helper) is a member of the run and claims nothing.
 - **Test ID.** keploy names a test `file::name`. `file` is the test's file relative to the project directory, with `/` separators. `name` is the test's pytest node ID within that file: `test_charges_a_card`, `TestOrders::test_prices_a_book`, `test_price[book]`. keploy's ID escapes a `::` inside the name, so keploy shows a class's test as `tests/test_orders.py::TestOrders%3A%3Atest_prices_a_book`.
-- **Begin.** Each test begins (`POST /agent/scope/begin`) once the fixtures of a wider scope it uses (session, package, module, class) are set up, and before its own function-scoped fixtures. pytest's scopes decide where a call belongs: a call a session or module fixture makes belongs to the test process, outside every test, and a call a function-scoped fixture or the test makes belongs to the test. A test pytest skips by a mark is never begun.
+- **Begin.** Each test begins (`POST /agent/scope/begin`) once the fixtures of a wider scope it uses (session, package, module, class) are set up, and before its own function-scoped fixtures, whoever declares them: the test module, a `conftest.py`, or another plugin (an autouse fixture included). pytest's scopes decide where a call belongs: a call a session or module fixture makes belongs to the test process, outside every test, and a call a function-scoped fixture or the test makes belongs to the test. A test pytest skips by a mark is never begun.
 - **Skip.** A test keploy set aside (quarantined, or held by a judge) is skipped by pytest itself, before its own fixtures run, with keploy's reason as pytest's skip reason (`-rs` shows it). The plugin also lists each test keploy set aside, with its reason, in a `keploy` section of pytest's summary.
 - **End.** The test ends (`POST /agent/scope/end`) once its own function-scoped fixtures are torn down, before any fixture of a wider scope is, with its outcome: pytest's outcome of its setup and call (`passed`, `failed`, or `skipped`, the worst of the two; an expected failure, `xfail`, is pytest's skipped). When keploy saw a call with no recorded answer, or a recorded call the test no longer made, the test errors at its teardown with keploy's text.
-- **Fail closed.** Any answer of the agent the plugin cannot trust (a non-2xx answer, an unreadable body, a missing or other protocol version) errors the test it belongs to; a claim that fails errors every test. A test ID begun a second time in one process (a rerun, such as pytest-rerunfailures' `--reruns`) errors with the reason, so no test runs unjudged. Nothing is retried, and there is no timeout: keploy answers once the work it owes is done.
+- **Fail closed.** Any answer of the agent the plugin cannot trust (a non-2xx answer, an unreadable body, a missing or other protocol version) errors the test it belongs to; a claim that fails errors every test that uses pytest's fixtures. A test ID begun a second time in one process (a rerun, such as pytest-rerunfailures' `--reruns`) errors with the reason, so no such test runs unjudged. Nothing is retried, and there is no timeout: keploy answers once the work it owes is done.
 
 A fixture's teardown error is pytest's error of the test, and pytest fails the run with it; keploy is told the outcome of the test's setup and call, as the end comes after the test's own teardown and pytest reports teardown errors only once the whole teardown is done.
+
+## Limits of this version
+
+- A test is judged through pytest's fixtures. An item that uses none (a custom `pytest.Item` from a `pytest_collect_file` hook, such as a linter plugin's) runs as pytest runs it, not judged by keploy, even after a failed claim; its calls are the test process's. The run's end names each such item in a `keploy: N item(s) not judged by keploy` section.
 
 ## Tests
 

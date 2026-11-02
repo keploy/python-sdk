@@ -83,6 +83,86 @@ def test_claim_begin_end_order(suite, agent):
     claim = agent.calls[0][1]
     assert claim == {"key": ".", "dir": os.path.realpath(str(suite.path))}
     assert "set aside" not in r.stdout.str()
+    assert "not judged" not in r.stdout.str()
+
+
+def autouse(label, scope="function"):
+    """A file's text that declares an autouse fixture marking its setup and
+    teardown."""
+    return """
+import pytest
+from markhelp import mark
+
+@pytest.fixture(autouse=True, scope=%r)
+def %s():
+    mark("%s setup")
+    yield
+    mark("%s teardown")
+""" % (scope, label.replace(" ", "_"), label, label)
+
+
+BODY = "from markhelp import mark\n\ndef test_a():\n    mark('body')\n"
+
+
+def test_function_fixtures_of_a_conftest_or_another_plugin_are_inside_the_window(suite, agent):
+    # A root conftest.py, a conftest.py beside the tests and another plugin
+    # (-p) each declare an autouse function-scoped fixture, and the root
+    # conftest a session-scoped one: pytest registers them all before this
+    # plugin, and sets their fixtures up in that order within a scope.
+    suite.makeconftest(autouse("root conftest") + autouse("root session", scope="session").replace("import pytest\nfrom markhelp import mark\n", ""))
+    suite.makepyfile(myplug=autouse("plugin"))
+    (suite.path / "tests").mkdir()
+    (suite.path / "tests" / "conftest.py").write_text(autouse("tests conftest"))
+    (suite.path / "tests" / "test_a.py").write_text(BODY)
+    r = run(suite, "-p", "myplug", "tests")
+    r.assert_outcomes(passed=1)
+    log = agent.log()
+    assert log[:2] == ["claim .", "root session setup"], log
+    assert log[2] == "begin tests/test_a.py::test_a", log
+    assert sorted(log[3:6]) == ["plugin setup", "root conftest setup", "tests conftest setup"], log
+    assert log[6] == "body", log
+    assert sorted(log[7:10]) == ["plugin teardown", "root conftest teardown", "tests conftest teardown"], log
+    assert log[10:] == ["end tests/test_a.py::test_a passed", "root session teardown"], log
+
+
+def test_items_that_use_no_fixtures_are_not_judged_and_named_at_the_end(suite, agent):
+    # A custom pytest.Item (as a linter plugin's) sets up no fixture: it runs
+    # as pytest runs it, and the run's end names it.
+    suite.makeconftest(CUSTOM)
+    (suite.path / "a.spec").write_text("x\n")
+    suite.makepyfile(test_a=BODY)
+    r = run(suite)
+    r.assert_outcomes(passed=2)
+    assert agent.log() == ["claim .", "custom item ran: spec1", "begin test_a.py::test_a", "body", "end test_a.py::test_a passed"]
+    r.stdout.fnmatch_lines(["*= keploy: 1 item(s) not judged by keploy =*",
+                            "they use no pytest fixtures, so keploy-pytest cannot begin or end them; their calls are the test process's:",
+                            "a.spec::spec1"])
+    # After a failed claim, such an item still runs as pytest runs it; every
+    # test that uses fixtures errors.
+    agent.calls.clear()
+    agent.script["/agent/instance"] = lambda body, n: (500, "boom")
+    r = run(suite)
+    r.assert_outcomes(passed=1, errors=1)
+    assert agent.log() == ["claim .", "custom item ran: spec1"]
+    r.stdout.fnmatch_lines(["*= keploy: 1 item(s) not judged by keploy =*"])
+
+
+CUSTOM = """
+import pytest
+from markhelp import mark
+
+class SpecItem(pytest.Item):
+    def runtest(self):
+        mark("custom item ran: " + self.name)
+
+class SpecFile(pytest.File):
+    def collect(self):
+        yield SpecItem.from_parent(self, name="spec1")
+
+def pytest_collect_file(parent, file_path):
+    if file_path.suffix == ".spec":
+        return SpecFile.from_parent(parent, path=file_path)
+"""
 
 
 def test_file_named_from_keploys_project_folder(suite, agent, monkeypatch):
