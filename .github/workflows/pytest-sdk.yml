@@ -1,0 +1,68 @@
+name: keploy-pytest
+
+on:
+  pull_request:
+    paths:
+      - "keploy-pytest/**"
+      - ".github/workflows/pytest-sdk.yml"
+  push:
+    branches: [main]
+    paths:
+      - "keploy-pytest/**"
+      - ".github/workflows/pytest-sdk.yml"
+
+jobs:
+  rows:
+    name: rows (Python ${{ matrix.python }}, pytest ${{ matrix.pytest }})
+    runs-on: ubuntu-latest
+    strategy:
+      # One leg failing must not cancel the others: each leg's result is its
+      # own.
+      fail-fast: false
+      matrix:
+        # The oldest pytest this plugin supports (pyproject.toml) on the
+        # oldest Python it supports, the last pytest 8, and pytest 9 on the
+        # newest Python.
+        include:
+          - { python: "3.9", pytest: "8.0.2" }
+          - { python: "3.12", pytest: "8.4.2" }
+          - { python: "3.14", pytest: "9.2.0" }
+    defaults:
+      run:
+        working-directory: keploy-pytest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e . "pytest==${{ matrix.pytest }}" "pytest-xdist==3.8.0"
+      - run: python -m pytest -p no:cacheprovider tests
+
+  e2e:
+    # e2e/lane.sh: this commit's package, built as a wheel and installed into
+    # a small pytest suite, run under keploy mock record with its provider
+    # up, then keploy mock replay with the provider stopped; a test whose
+    # call has no recorded answer, and one that no longer makes its recorded
+    # call, error with keploy's text; a quarantined test is skipped with
+    # keploy's reason.
+    name: e2e (keploy mock record and replay)
+    runs-on: ubuntu-latest
+    # The lane takes a few minutes, pip installs included: a run past 15 is a hang.
+    timeout-minutes: 15
+    env:
+      # keploy's enterprise build, which judges each test under
+      # KEPLOY_PROVEN=1. Pinned, and checked against its digest, so that a
+      # new keploy release cannot change this job's result unseen.
+      KEPLOY_VERSION: "3.8.106"
+      KEPLOY_SHA256: "2c4c9bcf0a703b65827d1cee5ca88fe9d7856844a08cac368b42b83345fef3ce"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install keploy ${{ env.KEPLOY_VERSION }}
+        run: |
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/keploy" "https://keploy.io/ent/dl/$KEPLOY_VERSION/enterprise_linux_amd64"
+          echo "$KEPLOY_SHA256  $RUNNER_TEMP/keploy" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/keploy"
+      - run: KEPLOY_BIN="$RUNNER_TEMP/keploy" bash keploy-pytest/e2e/lane.sh

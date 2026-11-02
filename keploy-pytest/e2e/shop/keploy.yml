@@ -1,0 +1,5 @@
+# The keploy project of the e2e suite: the set's name and CI's test command,
+# one pytest process: keploy judges one test at a time.
+mock:
+  name: shop
+  command: python -m pytest -rfEs -p no:cacheprovider
