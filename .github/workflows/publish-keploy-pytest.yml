@@ -18,8 +18,9 @@ name: keploy-pytest publish
 # PyPI accepts the upload only from a trusted publisher it knows: the project
 # keploy-pytest, owner keploy, repository python-sdk, workflow
 # publish-keploy-pytest.yml, environment pypi. Until that is set on PyPI the
-# publish step fails and uploads nothing. Every action this workflow runs is
-# pinned by commit: the publish job can mint the identity PyPI trusts.
+# publish step fails and uploads nothing. Every action this workflow runs,
+# the rows' included, is pinned by commit: the publish job can mint the
+# identity PyPI trusts.
 #
 # Push keploy-pytest-vX.Y.Z as a plain git tag, never as a GitHub release: a
 # created GitHub release also starts main.yml, which builds and publishes the
