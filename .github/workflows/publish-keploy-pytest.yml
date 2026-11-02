@@ -1,0 +1,114 @@
+name: keploy-pytest publish
+
+# Publishes keploy-pytest to PyPI from a tag, by trusted publishing: PyPI
+# takes this workflow's OpenID Connect identity in place of a token, so the
+# repository holds no PyPI secret for it.
+#
+# To release X.Y.Z: set version = "X.Y.Z" in keploy-pytest/pyproject.toml on
+# main (a pull request, so the dry run below checks it), then push the tag
+# keploy-pytest-vX.Y.Z on that commit. A run started by hand
+# (workflow_dispatch) publishes only when started from such a tag: from any
+# other ref the version check refuses it. The rows and the e2e lane
+# (pytest-sdk.yml) run on the tagged commit first; the publish runs only when
+# every leg and the lane pass, and refuses a build that is not one wheel and
+# one sdist of keploy-pytest whose version the tag names
+# (keploy-pytest/scripts/release_version.py). PyPI itself refuses a version
+# it already has.
+#
+# PyPI accepts the upload only from a trusted publisher it knows: the project
+# keploy-pytest, owner keploy, repository python-sdk, workflow
+# publish-keploy-pytest.yml, environment pypi. Until that is set on PyPI the
+# publish step fails and uploads nothing. Every action this workflow runs is
+# pinned by commit: the publish job can mint the identity PyPI trusts.
+#
+# Push keploy-pytest-vX.Y.Z as a plain git tag, never as a GitHub release: a
+# created GitHub release also starts main.yml, which builds and publishes the
+# repository's root package under this tag. keploy-pytest/README.md,
+# "Releasing", says the same.
+#
+# On every pull request the same build is checked with no upload: the
+# version check, twine's metadata check, and the plugin's files and entry
+# point in the wheel.
+on:
+  push:
+    tags: ["keploy-pytest-v*"]
+  workflow_dispatch:
+  # Every pull request, whatever it touches: the dry run is a minute's build.
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rows:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/pytest-sdk.yml
+
+  publish:
+    name: publish to PyPI
+    if: github.event_name != 'pull_request'
+    needs: rows
+    runs-on: ubuntu-latest
+    # The trusted publisher on PyPI names this environment.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/keploy-pytest
+    permissions:
+      contents: read
+      id-token: write # trusted publishing: PyPI takes this run's identity
+    defaults:
+      run:
+        shell: bash # -eo pipefail: a failed command before a pipe fails the step
+        working-directory: keploy-pytest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build==1.6.1
+      - name: Build
+        run: python -m build --outdir dist .
+      - name: The tag names the built version
+        run: python scripts/release_version.py "$GITHUB_REF_NAME" dist
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: keploy-pytest/dist/
+
+  dry-run:
+    name: publish dry run
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash # -eo pipefail: a failed command before a pipe fails the step
+        working-directory: keploy-pytest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build==1.6.1 twine==7.0.0
+      - name: Build
+        run: python -m build --outdir dist .
+      - name: The version check passes on the tag this version would get
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          python scripts/release_version.py "keploy-pytest-v$version" dist
+      - name: The metadata renders on PyPI
+        run: python -m twine check --strict dist/*
+      - name: The wheel carries the plugin and its entry point
+        run: |
+          python - <<'EOF'
+          import glob, sys, zipfile
+          (whl,) = glob.glob("dist/*.whl")
+          z = zipfile.ZipFile(whl)
+          names = set(z.namelist())
+          missing = [f for f in ("keploy_pytest/__init__.py", "keploy_pytest/agent.py", "keploy_pytest/join.py", "keploy_pytest/plugin.py") if f not in names]
+          (ep,) = [n for n in names if n.endswith(".dist-info/entry_points.txt")]
+          if "[pytest11]\nkeploy = keploy_pytest.plugin" not in z.read(ep).decode():
+              missing.append("the pytest11 entry point keploy = keploy_pytest.plugin")
+          if missing:
+              print(f"::error::the wheel would ship without {', '.join(missing)}")
+              sys.exit(1)
+          EOF

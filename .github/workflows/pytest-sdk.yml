@@ -10,6 +10,9 @@ on:
     paths:
       - "keploy-pytest/**"
       - ".github/workflows/pytest-sdk.yml"
+  # publish-keploy-pytest.yml runs these rows and the e2e lane on a release
+  # tag before it publishes.
+  workflow_call:
 
 jobs:
   rows:

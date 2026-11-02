@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+# 77 is the first setuptools to read an SPDX license expression.
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,12 +9,11 @@ version = "0.1.0"
 description = "Join a pytest suite to keploy's Universal Mocker: keploy mock record and keploy mock replay judge each test."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "Keploy", email = "hello@keploy.io" }]
 classifiers = [
     "Framework :: Pytest",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
     "Topic :: Software Development :: Testing",
 ]
