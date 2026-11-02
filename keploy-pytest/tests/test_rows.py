@@ -279,6 +279,317 @@ class TestA:
                            "end pkg/test_a.py::TestA::test_a passed", "class teardown", "package teardown"]
 
 
+def test_a_class_or_package_fixture_set_up_inside_a_test_fails_that_test_and_is_listed(suite, agent):
+    pkg = suite.path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "conftest.py").write_text("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="package")
+def pfix():
+    mark("package pfix setup")
+""")
+    (pkg / "test_a.py").write_text("""
+import pytest
+from markhelp import mark
+
+class TestA:
+    @pytest.fixture(scope="class")
+    def cfix(self):
+        mark("class cfix setup")
+
+    def test_c(self, request):
+        request.getfixturevalue("cfix")
+
+def test_p(request):
+    request.getfixturevalue("pfix")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=2, errors=2)
+    assert agent.log() == ["claim .", "begin pkg/test_a.py::TestA::test_c", "class cfix setup",
+                           "end pkg/test_a.py::TestA::test_c failed", "begin pkg/test_a.py::test_p", "package pfix setup",
+                           "end pkg/test_a.py::test_p failed"]
+    r.stdout.fnmatch_lines(["keploy: TestA::test_c set up a fixture of a wider scope while it ran: cfix (class scope).*",
+                            "keploy: test_p set up a fixture of a wider scope while it ran: pfix (package scope).*",
+                            "*= keploy: 2 test(s) failed: a fixture of a wider scope was set up inside them =*",
+                            "each fixture's calls*",
+                            "pkg/test_a.py::TestA::test_c: cfix (class scope)",
+                            "pkg/test_a.py::test_p: pfix (package scope)"])
+
+
+def test_a_wider_fixture_that_overrides_one_of_its_name_is_listed_once(suite, agent):
+    # A session db over the conftest's session db, first requested by the
+    # test's body: both are set up inside the test, under one name and scope.
+    suite.makeconftest(WIDER)
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def db(db):
+    mark("module's session db setup")
+    yield
+
+def test_a(request):
+    request.getfixturevalue("db")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=1, errors=1)
+    assert agent.log() == ["claim .", "begin test_a.py::test_a", "session db setup", "module's session db setup",
+                           "end test_a.py::test_a failed", "session db teardown"]
+    line = [x for x in r.outlines if x.startswith("keploy: test_a set up a fixture of a wider scope")]
+    assert len(line) == 1 and line[0].count("db (session scope)") == 1, r.outlines
+
+
+def test_wider_fixtures_a_plugin_adds_to_a_tests_names_are_set_up_before_it_begins(suite, agent):
+    # A plugin's pytest_runtest_setup adds a fixture name to the test's
+    # names after keploy-pytest ordered them, as pytest-asyncio adds its event
+    # loop runner. Every fixture of a wider scope that name reaches, through
+    # its arguments and the conftest fixture it overrides, is set up before
+    # the test begins, widest scope first; the function-scoped ones after.
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+def pytest_runtest_setup(item):
+    item.fixturenames.append("added")
+
+@pytest.fixture(scope="session")
+def sess():
+    mark("session sess setup")
+
+@pytest.fixture
+def added(sess):
+    mark("conftest added setup")
+""")
+    pkg = suite.path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "conftest.py").write_text("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="package")
+def pkgf():
+    mark("package pkgf setup")
+""")
+    (pkg / "test_a.py").write_text("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="module")
+def modf():
+    mark("module modf setup")
+
+class TestA:
+    @pytest.fixture(scope="class")
+    def clsf(self):
+        mark("class clsf setup")
+
+    @pytest.fixture
+    def added(self, added, modf, pkgf, clsf):
+        mark("class added setup")
+
+    def test_a(self):
+        mark("body")
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=1)
+    assert agent.log() == ["claim .", "session sess setup", "package pkgf setup", "module modf setup", "class clsf setup",
+                           "begin pkg/test_a.py::TestA::test_a", "conftest added setup", "class added setup", "body",
+                           "end pkg/test_a.py::TestA::test_a passed"]
+
+
+def test_a_doctest_begins_once_doctest_namespace_is_set_up(suite, agent):
+    # pytest's doctest runner requests the session fixture doctest_namespace
+    # by name once the doctest's own fixtures are set up.
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def doctest_namespace(doctest_namespace):
+    mark("doctest_namespace setup")
+    doctest_namespace["three"] = 3
+    return doctest_namespace
+""")
+    suite.makepyfile(mod='''
+def add(a, b):
+    """
+    >>> add(1, 2) == three
+    True
+    """
+    return a + b
+''')
+    suite.makepyfile(test_a=BODY)
+    r = run(suite, "--doctest-modules")
+    r.assert_outcomes(passed=2)
+    assert agent.log() == ["claim .", "doctest_namespace setup", "begin mod.py::mod.add", "end mod.py::mod.add passed",
+                           "begin test_a.py::test_a", "body", "end test_a.py::test_a passed"]
+    # A test that is no doctest does not set it up.
+    agent.calls.clear()
+    r = run(suite, "test_a.py")
+    r.assert_outcomes(passed=1)
+    assert agent.log() == ["claim .", "begin test_a.py::test_a", "body", "end test_a.py::test_a passed"]
+
+
+def asyncio_version():
+    from importlib.metadata import version
+    return tuple(int(x) for x in version("pytest-asyncio").split(".")[:2])
+
+
+def test_pytest_asyncio_tests_and_fixtures_begin_after_their_event_loop(suite, agent):
+    # pytest-asyncio adds its event loop runner (1.x) or loop (0.23) to an
+    # async test's names as the test is set up, and requests a runner by name
+    # as it sets an async fixture up. Its loops, of every loop scope, are set
+    # up before the test begins; the async fixture and the body run inside.
+    # Each file runs in a process of its own, so each is the first to need
+    # a loop.
+    loop = "loop_scope" if asyncio_version() >= (1, 0) else "scope"
+    two = """
+async def test_one(%s):
+    mark("one body")
+
+async def test_two(%s):
+    mark("two body")
+"""
+    head = "import pytest\nfrom markhelp import mark\n"
+    fixture = """
+@pytest.fixture
+async def client():
+    mark("client up")
+    yield 1
+    mark("client down")
+"""
+    shapes = {
+        # strict mode, the asyncio marker, the default (function) loop scope
+        "test_strict.py": ("strict", head + "pytestmark = pytest.mark.asyncio\n" + two % ("", "")),
+        # auto mode, an async fixture (the shape of FastAPI's and httpx's docs)
+        "test_auto.py": ("auto", head + fixture + two % ("client", "client")),
+        "test_module_loop.py": ("strict", head + "pytestmark = pytest.mark.asyncio(%s='module')\n" % loop + two % ("", "")),
+        "test_session_loop.py": ("strict", head + "pytestmark = pytest.mark.asyncio(%s='session')\n" % loop + two % ("", "")),
+    }
+    for f, (mode, text) in shapes.items():
+        suite.makepyfile(**{f[:-3]: text})
+        agent.calls.clear()
+        r = run(suite, "-o", "asyncio_mode=" + mode, f)
+        r.assert_outcomes(passed=2)
+        up, down = (["client up"], ["client down"]) if f == "test_auto.py" else ([], [])
+        assert agent.log() == (["claim .", "begin %s::test_one" % f] + up + ["one body"] + down +
+                               ["end %s::test_one passed" % f, "begin %s::test_two" % f] + up + ["two body"] + down +
+                               ["end %s::test_two passed" % f]), (f, agent.log())
+    # A test that is not async, with an async fixture (an async generator
+    # or a coroutine): only the fixture asks pytest-asyncio for a loop.
+    coro = fixture.replace('    yield 1\n    mark("client down")\n', "    return 1\n")
+    for f, text in {"test_sync_gen.py": fixture, "test_sync_coro.py": coro}.items():
+        suite.makepyfile(**{f[:-3]: head + text + '\ndef test_one(client):\n    mark("one body")\n'})
+        agent.calls.clear()
+        r = run(suite, "-o", "asyncio_mode=auto", f)
+        r.assert_outcomes(passed=1)
+        down = ["client down"] if f == "test_sync_gen.py" else []
+        assert agent.log() == ["claim .", "begin %s::test_one" % f, "client up", "one body"] + down + [
+            "end %s::test_one passed" % f], (f, agent.log())
+    if asyncio_version() < (1, 0):
+        return
+    # pytest-asyncio 1.x runs an async fixture in the runner of the fixture's
+    # own loop scope, which it requests by name as it sets the fixture up:
+    # the one pytest_asyncio.fixture gives it, else the
+    # asyncio_default_fixture_loop_scope setting. That runner is set up
+    # before the test begins too.
+    scoped = head + "import pytest_asyncio\n" + fixture.replace("@pytest.fixture", "@pytest_asyncio.fixture(loop_scope='module')")
+    shapes = {
+        "test_fixture_loop.py": (["-o", "asyncio_mode=strict"], scoped + '\ndef test_one(client):\n    mark("one body")\n'),
+        "test_default_loop.py": (["-o", "asyncio_mode=auto", "-o", "asyncio_default_fixture_loop_scope=session"],
+                                 head + fixture + '\nasync def test_one(client):\n    mark("one body")\n'),
+    }
+    for f, (opts, text) in shapes.items():
+        suite.makepyfile(**{f[:-3]: text})
+        agent.calls.clear()
+        r = run(suite, *opts, f)
+        r.assert_outcomes(passed=1)
+        assert agent.log() == ["claim .", "begin %s::test_one" % f, "client up", "one body", "client down",
+                               "end %s::test_one passed" % f], (f, agent.log())
+
+
+def test_pytest_asyncio_sets_no_event_loop_up_for_a_test_without_async_fixtures(suite, agent):
+    if asyncio_version() < (1, 0):
+        pytest.skip("pytest-asyncio 0.23 has no event loop runners")
+    # The loop factory every runner of pytest-asyncio's requests, overridden
+    # to mark its setup: set up before the async test begins, and never for
+    # the test that has no async fixture.
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def _asyncio_loop_factory(_asyncio_loop_factory):
+    mark("loop factory")
+    return _asyncio_loop_factory
+""")
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="module")
+def mod():
+    mark("module setup")
+
+@pytest.fixture
+def fn(mod):
+    mark("function setup")
+
+def test_sync(fn):
+    mark("sync body")
+
+async def test_async():
+    mark("async body")
+""")
+    r = run(suite, "-o", "asyncio_mode=auto")
+    r.assert_outcomes(passed=2)
+    assert agent.log() == ["claim .", "module setup", "begin test_a.py::test_sync", "function setup", "sync body",
+                           "end test_a.py::test_sync passed", "loop factory", "begin test_a.py::test_async", "async body",
+                           "end test_a.py::test_async passed"]
+
+
+def test_an_async_fixture_without_pytest_asyncio_begins_as_any_other(suite, agent):
+    # Without pytest-asyncio (and so without its loop scope setting), an
+    # async fixture is run as pytest runs it, inside the test: keploy-pytest
+    # looks for no event loop, and the test begins.
+    suite.makepyfile(test_a="""
+import pytest
+
+@pytest.fixture
+async def coro():
+    return 1
+
+def test_a(coro):
+    pass
+""")
+    r = run(suite, "-p", "no:asyncio")
+    assert agent.log()[:2] == ["claim .", "begin test_a.py::test_a"], (agent.log(), r.outlines)
+    assert not [x for x in r.outlines if "unknown configuration value" in x], r.outlines
+
+
+def test_a_recursive_fixture_fails_with_pytests_own_error(suite, agent):
+    # A fixture that requests its own name with none to override: pytest's
+    # own error, not one of keploy-pytest's.
+    suite.makepyfile(test_a="""
+import pytest
+
+@pytest.fixture
+def selfish(selfish):
+    pass
+
+def test_a(selfish):
+    pass
+""")
+    r = run(suite)
+    r.assert_outcomes(errors=1)
+    r.stdout.fnmatch_lines(["*recursive dependency involving fixture 'selfish' detected*"])
+
+
 DJANGO_SETTINGS = """
 SECRET_KEY = "rows"
 INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]
@@ -320,24 +631,15 @@ def django_db_setup(django_db_setup):
         r.assert_outcomes(passed=1)
         assert agent.log() == ["claim .", "test database created", "begin %s::test_one" % f, "users 0",
                                "end %s::test_one passed" % f, "test database torn down"], f
-    # A fixture that overrides pytest-django's db by its name: pytest 9
-    # follows the override's own requests to django_db_setup, and sets it up
-    # before the test; pytest 8 does not, so the test fails and names it.
+    # A fixture that overrides pytest-django's db by its name: the database
+    # is set up before the test begins, through the db it overrides.
     suite.makepyfile(test_override="import pytest\nfrom markhelp import mark\n\n@pytest.fixture\ndef db(db):\n    pass\n\n"
                                    "def test_one(db):" + body)
     agent.calls.clear()
     r = run(suite, "--ds=settings", "test_override.py")
-    log = agent.log()
-    if pytest.version_tuple >= (9,):
-        r.assert_outcomes(passed=1)
-        assert log == ["claim .", "test database created", "begin test_override.py::test_one", "users 0",
-                       "end test_override.py::test_one passed", "test database torn down"], log
-    else:
-        r.assert_outcomes(passed=1, errors=1)
-        assert log == ["claim .", "begin test_override.py::test_one", "test database created", "users 0",
-                       "end test_override.py::test_one failed", "test database torn down"], log
-        line = [x for x in r.outlines if x.startswith("keploy: test_one set up a fixture of a wider scope")]
-        assert len(line) == 1 and line[0].count("django_db_setup (session scope)") == 1, r.outlines
+    r.assert_outcomes(passed=1)
+    assert agent.log() == ["claim .", "test database created", "begin test_override.py::test_one", "users 0",
+                           "end test_override.py::test_one passed", "test database torn down"]
 
 
 def test_without_pytest_django_its_marker_and_live_server_are_plain(suite, agent):
@@ -351,6 +653,10 @@ def pytest_configure(config):
 @pytest.fixture
 def live_server():
     mark("own live_server")
+
+@pytest.fixture(scope="session")
+def django_db_setup():
+    mark("own django_db_setup")
 """)
     suite.makepyfile(test_a="""
 import pytest

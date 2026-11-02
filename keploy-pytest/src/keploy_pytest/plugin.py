@@ -16,23 +16,31 @@ process at a time, and refuses a second):
     collects (and so imports) any test module (POST /agent/instance), with
     keploy's project folder (KEPLOY_MOCK_PROJECT), which its test files are
     named from; the current folder only when keploy names none;
-  - each test begins (POST /agent/scope/begin) once the fixtures of a wider
-    scope it uses (session, package, module, class) are set up, before any
-    of its own function-scoped fixtures, whoever declares them (the test
-    module, a conftest.py, another plugin); a test keploy set aside is
-    skipped by pytest itself, with keploy's reason;
+  - each test begins (POST /agent/scope/begin) once every fixture of a
+    wider scope (session, package, module, class) it reaches is set up, and
+    before any of its own function-scoped fixtures, whoever declares them
+    (the test module, a conftest.py, another plugin); a test keploy set aside
+    is skipped by pytest itself, with keploy's reason;
   - the test ends (POST /agent/scope/end) once its own function-scoped
     fixtures are torn down, before any fixture of a wider scope is, with the
     outcome of its setup and call; when keploy saw a call with no recorded
     answer, or a recorded call the test no longer made, the test errors at
     its teardown with keploy's text.
-A fixture of a wider scope (session, package, module, class) that is set
-up only once a test has begun (requested with request.getfixturevalue while
-the test runs, or through a function fixture of the same name) would have
-its calls counted as that test's: that test fails, naming the fixture and the
-fix, and the run's end lists it. pytest-django's test database
-(django_db_setup), which pytest-django sets up from inside a test for the
-django_db marker and for live_server, is set up before the test begins.
+The fixtures of a wider scope a test reaches are read from pytest's own
+fixture graph as the test is set up: the test's fixture names, including
+those a plugin adds once the test is collected (pytest-asyncio's event loop
+runner), and each fixture's arguments, through any fixture that overrides
+another by its name. Three fixtures are set up by name from inside a test,
+outside that graph, and are followed too: pytest's
+doctest_namespace, for a doctest; pytest-django's test database
+(django_db_setup), for the django_db marker and for live_server; and
+pytest-asyncio's event loop runner of an async fixture's loop scope, which it
+requests as it sets the fixture up.
+A fixture of a wider scope that is still set up only once a test has begun
+(requested with request.getfixturevalue while the test runs, or one that
+only a function fixture of the same name reaches, def db(db)) would have its
+calls counted as that test's: that test fails, naming the fixture and the
+fix, and the run's end lists it.
 Any answer of the agent this plugin cannot trust fails the test it belongs
 to; a claim that fails errors every test. A test ID begun a second time in
 one process (a rerun) errors with the reason; none runs unjudged.
@@ -41,6 +49,7 @@ custom pytest.Item, such as a linter's) runs as pytest runs it, not judged
 by keploy, and the run's end names each such item. The lists at the run's
 end travel in pytest's reports, so pytest-xdist's controller prints them.
 """
+import inspect
 import os
 
 import pytest
@@ -57,6 +66,13 @@ _FIXTURE = "_keploy"
 # pytest-django's session fixture that creates and migrates the test
 # database.
 _DJANGO_DB_SETUP = "django_db_setup"
+
+# pytest's session fixture whose names a doctest runs with: DoctestItem.setup
+# requests it by name once the doctest's fixtures are set up.
+_DOCTEST_NAMESPACE = "doctest_namespace"
+
+# The scopes wider than the function, widest first.
+_WIDER = ("session", "package", "module", "class")
 
 
 def keploy_text(reason, fallback):
@@ -115,6 +131,95 @@ def django_db_setup_inside(item, names):
     transactional_db). Both reach the session fixture django_db_setup.
     names is the item's fixture names."""
     return item.get_closest_marker("django_db") is not None or "live_server" in names
+
+
+def by_name(item, django):
+    """The fixtures of a wider scope that pytest or a plugin sets up by name
+    from inside this item's window, outside pytest's fixture graph: pytest's
+    doctest_namespace for a doctest, and, when pytest-django is loaded
+    (django), its django_db_setup for an item django_db_setup_inside names."""
+    out = []
+    if isinstance(item, pytest.DoctestItem):
+        out.append(_DOCTEST_NAMESPACE)
+    if django and django_db_setup_inside(item, item.fixturenames):
+        out.append(_DJANGO_DB_SETUP)
+    return out
+
+
+def is_async(func):
+    """Whether a fixture's function is a coroutine or an async generator
+    function: one pytest-asyncio runs in an event loop runner."""
+    return inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+
+
+def asyncio_runner(fd, config):
+    """The fixture pytest-asyncio (1.x) requests by name as it sets up fd,
+    when fd is an async fixture (pytest_asyncio.plugin's
+    pytest_fixture_setup): the event loop runner of the fixture's loop scope,
+    _<loop scope>_scoped_runner, which is no argument of fd. The loop scope is
+    pytest-asyncio's own: the one pytest_asyncio.fixture gave the fixture,
+    else the asyncio_default_fixture_loop_scope setting, else the fixture's
+    scope. None for a fixture that is not async. Without that setting (no
+    pytest-asyncio, or 0.23, which gives an async fixture its loop as an
+    argument) the name is still returned, and names no fixture, so the walk
+    passes it by."""
+    if not is_async(fd.func):
+        return None
+    try:
+        default = config.getini("asyncio_default_fixture_loop_scope")
+    except ValueError:
+        default = None
+    return "_%s_scoped_runner" % (getattr(fd.func, "_loop_scope", None) or default or fd.scope)
+
+
+def wider_reached(names, defs_of, requested):
+    """The fixtures of a wider scope than the function that pytest sets up
+    for these fixture names, widest scope first, read from pytest's own graph:
+    each name's nearest definition (defs_of(name)[-1], the one pytest gives a
+    test), each fixture's arguments, and, where a fixture requests its own
+    name, the definition it overrides (pytest's own chain). A fixture also
+    reaches the fixture requested(fixturedef) names, when not None: one a
+    plugin requests by name as it sets the fixture up. A wider definition
+    reached only as the one an override overrides (a session db under
+    def db(db)) is not returned: requesting its name gives the override."""
+    found = {}
+    seen = set()
+    todo = [(n, ()) for n in names]
+    i = 0
+    while i < len(todo):
+        name, chain = todo[i]
+        i += 1
+        defs = defs_of(name)
+        depth = chain.count(name) + 1
+        if not defs or depth > len(defs):
+            continue
+        fd = defs[-depth]
+        if id(fd) in seen:
+            continue
+        seen.add(id(fd))
+        if depth == 1 and fd.scope in _WIDER:
+            found[name] = _WIDER.index(fd.scope)
+        args = list(fd.argnames)
+        extra = requested(fd)
+        if extra is not None:
+            args.append(extra)
+        todo.extend((a, chain + (name,)) for a in args)
+    return sorted(found, key=found.get)
+
+
+def defs_lookup(item):
+    """defs_of for wider_reached: a fixture name's definitions visible to
+    item, as pytest itself looks them up for the item (pytest 8.0 looks them
+    up by the item's parent's node ID, later pytest by the item)."""
+    info = item._fixtureinfo
+    fm = item.session._fixturemanager
+    node = item if "node" in inspect.signature(fm.getfixturedefs).parameters else item.parent.nodeid
+
+    def defs_of(name):
+        defs = info.name2fixturedefs.get(name)
+        return defs if defs is not None else fm.getfixturedefs(name, node)
+
+    return defs_of
 
 
 def has_pytest_django(config):
@@ -209,18 +314,10 @@ class KeployScope:
             # It sets up no fixture, so _keploy never runs for it.
             item.stash[_NOTE] = ("keploy_unjudged", item.nodeid)
         else:
-            names = info.names_closure
-            early = ()
-            if self.django and _DJANGO_DB_SETUP not in names and django_db_setup_inside(item, names):
-                # pytest sets each name of the list up, by
-                # request.getfixturevalue, so the test database is set up
-                # before _keploy, as a test that requests db has it.
-                names.append(_DJANGO_DB_SETUP)
-                early = (_DJANGO_DB_SETUP,)
             # pytest sets the item's fixtures up in this list's order
             # (FixtureRequest._fillfixtures): _keploy goes right after every
             # fixture of a wider scope, before every function-scoped one.
-            names.sort(key=lambda n: 0 if n in early else setup_rank(info.name2fixturedefs, n))
+            info.names_closure.sort(key=lambda n: setup_rank(info.name2fixturedefs, n))
         return (yield)
 
     @pytest.hookimpl(wrapper=True)
@@ -249,6 +346,12 @@ class KeployScope:
             pytest.fail("keploy: %s in %s would begin a second time, and keploy names a test by its file and name: "
                         "run each test once (no reruns, such as pytest-rerunfailures' --reruns)" % (ref["name"], ref["file"]),
                         pytrace=False)
+        # Every fixture of a wider scope the test reaches is set up before it
+        # begins, the ones a plugin added to its names since pytest sorted
+        # them included: their calls belong to the test process.
+        names = list(item.fixturenames) + by_name(item, self.django)
+        for name in wider_reached(names, defs_lookup(item), lambda fd: asyncio_runner(fd, item.config)):
+            request.getfixturevalue(name)
         self.begun.add(tid)
         try:
             b = c.begin(ref)

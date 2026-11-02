@@ -25,11 +25,12 @@ jobs:
       matrix:
         # The oldest pytest this plugin supports (pyproject.toml) on the
         # oldest Python it supports, the last pytest 8, and pytest 9 on the
-        # newest Python.
+        # newest Python. pytest-asyncio 1.x needs Python 3.10 and pytest 8.4:
+        # the 3.9 leg runs the 0.23 line.
         include:
-          - { python: "3.9", pytest: "8.0.2", pytest-django: "4.11.1", django: "4.2.30" }
-          - { python: "3.12", pytest: "8.4.2", pytest-django: "4.14.0", django: "5.2.18" }
-          - { python: "3.14", pytest: "9.2.0", pytest-django: "4.14.0", django: "6.1.2" }
+          - { python: "3.9", pytest: "8.0.2", pytest-django: "4.11.1", django: "4.2.30", pytest-asyncio: "0.23.8" }
+          - { python: "3.12", pytest: "8.4.2", pytest-django: "4.14.0", django: "5.2.18", pytest-asyncio: "1.4.1.post1" }
+          - { python: "3.14", pytest: "9.2.0", pytest-django: "4.14.0", django: "6.1.2", pytest-asyncio: "1.4.1.post1" }
     defaults:
       run:
         working-directory: keploy-pytest
@@ -38,7 +39,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e . "pytest==${{ matrix.pytest }}" "pytest-xdist==3.8.0" "pytest-django==${{ matrix.pytest-django }}" "django==${{ matrix.django }}"
+      - run: python -m pip install -e . "pytest==${{ matrix.pytest }}" "pytest-xdist==3.8.0" "pytest-django==${{ matrix.pytest-django }}" "django==${{ matrix.django }}" "pytest-asyncio==${{ matrix.pytest-asyncio }}"
       - run: python -m pytest -p no:cacheprovider tests
 
   e2e:
