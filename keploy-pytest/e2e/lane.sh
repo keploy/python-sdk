@@ -53,8 +53,6 @@ show() {
   done
 }
 
-if [ "$(id -u)" -eq 0 ]; then AS_ROOT=(env); else AS_ROOT=(sudo -E env "PATH=$PATH" "HOME=$HOME"); fi
-
 # The package as PyPI would take it (a wheel), installed beside the pinned
 # pytest into a virtualenv; the suite runs from a copy of e2e/shop.
 mkdir -p "$WORK/logs" "$WORK/pkg"
@@ -96,11 +94,14 @@ run() {
   # LANE_VERBOSE=1 shows every run's output, not only a failing check's.
   [ -z "${LANE_VERBOSE:-}" ] || show "$id"
 }
-# keploy ID ARGS...: one keploy run under the proven switch, as root.
+# keploy ID ARGS...: one keploy run under the proven switch, as root. sudo
+# gets the PATH of the moment of the call, so that the test command keploy
+# starts as root runs the virtualenv's python, as it does without keploy.
 keploy() {
-  local id=$1
+  local id=$1 as_root=(env)
   shift
-  run "$id" "${AS_ROOT[@]}" KEPLOY_PROVEN=1 KEPLOY_INVOKER=ci "SHOP_PROVIDER=$SHOP_PROVIDER" \
+  [ "$(id -u)" -eq 0 ] || as_root=(sudo -E env "PATH=$PATH" "HOME=$HOME")
+  run "$id" "${as_root[@]}" KEPLOY_PROVEN=1 KEPLOY_INVOKER=ci "SHOP_PROVIDER=$SHOP_PROVIDER" \
     "SHOP_CHANGE=${SHOP_CHANGE:-}" "$KEPLOY_BIN" "$@" --disable-tele
 }
 # error_of ID HEAD: pytest's report of the error HEAD in a run (pytest's
