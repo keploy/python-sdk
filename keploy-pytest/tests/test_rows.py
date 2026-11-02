@@ -343,6 +343,42 @@ def test_a(request):
     assert len(line) == 1 and line[0].count("db (session scope)") == 1, r.outlines
 
 
+def test_a_direct_parametrization_hides_the_fixture_it_overrides(suite, agent):
+    # A test's parametrization of a fixture's name (direct, or of a module's
+    # scope) takes that fixture's place: pytest never sets the fixture up,
+    # nor the session fixture only it reaches, and neither does keploy-pytest
+    # before the test begins.
+    suite.makeconftest("""
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def heavy():
+    mark("heavy setup")
+    raise RuntimeError("heavy must not be set up")
+
+@pytest.fixture
+def username(heavy):
+    return "fixture"
+""")
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.mark.parametrize("username", ["direct"])
+def test_u(username):
+    mark("body " + username)
+
+@pytest.mark.parametrize("username", ["mod"], scope="module")
+def test_m(username):
+    mark("body " + username)
+""")
+    r = run(suite)
+    r.assert_outcomes(passed=2)
+    assert agent.log() == ["claim .", "begin test_a.py::test_u[direct]", "body direct", "end test_a.py::test_u[direct] passed",
+                           "begin test_a.py::test_m[mod]", "body mod", "end test_a.py::test_m[mod] passed"]
+
+
 def test_wider_fixtures_a_plugin_adds_to_a_tests_names_are_set_up_before_it_begins(suite, agent):
     # A plugin's pytest_runtest_setup adds a fixture name to the test's
     # names after keploy-pytest ordered them, as pytest-asyncio adds its event
@@ -441,13 +477,14 @@ def asyncio_version():
 
 
 def test_pytest_asyncio_tests_and_fixtures_begin_after_their_event_loop(suite, agent):
-    # pytest-asyncio adds its event loop runner (1.x) or loop (0.23) to an
-    # async test's names as the test is set up, and requests a runner by name
-    # as it sets an async fixture up. Its loops, of every loop scope, are set
-    # up before the test begins; the async fixture and the body run inside.
+    # pytest-asyncio adds its event loop runner (1.x) or loop (0.23 to 0.26)
+    # to an async test's names as the test is set up, and requests one by
+    # name as it sets an async fixture up (0.24 and later). Its loops, of
+    # every loop scope, are set up before the test begins; the async fixture
+    # and the body run inside.
     # Each file runs in a process of its own, so each is the first to need
     # a loop.
-    loop = "loop_scope" if asyncio_version() >= (1, 0) else "scope"
+    loop = "loop_scope" if asyncio_version() >= (0, 24) else "scope"
     two = """
 async def test_one(%s):
     mark("one body")
@@ -491,16 +528,19 @@ async def client():
         down = ["client down"] if f == "test_sync_gen.py" else []
         assert agent.log() == ["claim .", "begin %s::test_one" % f, "client up", "one body"] + down + [
             "end %s::test_one passed" % f], (f, agent.log())
-    if asyncio_version() < (1, 0):
+    if asyncio_version() < (0, 24):
         return
-    # pytest-asyncio 1.x runs an async fixture in the runner of the fixture's
-    # own loop scope, which it requests by name as it sets the fixture up:
-    # the one pytest_asyncio.fixture gives it, else the
-    # asyncio_default_fixture_loop_scope setting. That runner is set up
-    # before the test begins too.
+    # pytest-asyncio runs an async fixture in the event loop (0.24 to 0.26)
+    # or the event loop runner (1.x) of the fixture's own loop scope, which
+    # it requests by name as it sets the fixture up: the one
+    # pytest_asyncio.fixture gives it, which wins over the
+    # asyncio_default_fixture_loop_scope setting, else that setting. That
+    # loop is set up before the test begins too.
     scoped = head + "import pytest_asyncio\n" + fixture.replace("@pytest.fixture", "@pytest_asyncio.fixture(loop_scope='module')")
     shapes = {
         "test_fixture_loop.py": (["-o", "asyncio_mode=strict"], scoped + '\ndef test_one(client):\n    mark("one body")\n'),
+        "test_fixture_over_default.py": (["-o", "asyncio_mode=strict", "-o", "asyncio_default_fixture_loop_scope=function"],
+                                         scoped + '\ndef test_one(client):\n    mark("one body")\n'),
         "test_default_loop.py": (["-o", "asyncio_mode=auto", "-o", "asyncio_default_fixture_loop_scope=session"],
                                  head + fixture + '\nasync def test_one(client):\n    mark("one body")\n'),
     }
@@ -515,7 +555,7 @@ async def client():
 
 def test_pytest_asyncio_sets_no_event_loop_up_for_a_test_without_async_fixtures(suite, agent):
     if asyncio_version() < (1, 0):
-        pytest.skip("pytest-asyncio 0.23 has no event loop runners")
+        pytest.skip("pytest-asyncio before 1.0 has no event loop runners")
     # The loop factory every runner of pytest-asyncio's requests, overridden
     # to mark its setup: set up before the async test begins, and never for
     # the test that has no async fixture.
@@ -551,6 +591,106 @@ async def test_async():
     assert agent.log() == ["claim .", "module setup", "begin test_a.py::test_sync", "function setup", "sync body",
                            "end test_a.py::test_sync passed", "loop factory", "begin test_a.py::test_async", "async body",
                            "end test_a.py::test_async passed"]
+
+
+def session_loop_mark():
+    """A conftest.py that marks, as "session loop", the setup of
+    pytest-asyncio's session fixture of its loops: its session event loop
+    (0.23 to 0.26), or the loop factory every event loop runner requests
+    (1.x)."""
+    name = "_asyncio_loop_factory" if asyncio_version() >= (1, 0) else "_session_event_loop"
+    return """
+import pytest
+from markhelp import mark
+
+@pytest.fixture(scope="session")
+def %s(%s):
+    mark("session loop")
+    return %s
+""" % (name, name, name)
+
+
+def test_a_sync_fixture_marked_with_pytest_asyncio_fixture(suite, agent):
+    # pytest-asyncio 1.x runs a sync fixture marked with
+    # pytest_asyncio.fixture in the event loop runner of its loop scope too,
+    # which it requests by name as it sets the fixture up: the runner, and
+    # the session loop it needs, are set up before the first test begins.
+    # 0.23 to 0.26 run such a fixture as it is, and set no loop up.
+    suite.makeconftest(session_loop_mark())
+    loops = [""] + (["loop_scope='session'"] if asyncio_version() >= (0, 24) else [])
+    loop = ["session loop"] if asyncio_version() >= (1, 0) else []
+    for i, scope in enumerate(loops):
+        f = "test_marked%d.py" % i
+        suite.makepyfile(**{f[:-3]: """
+import pytest_asyncio
+from markhelp import mark
+
+@pytest_asyncio.fixture(%s)
+def sync_fix():
+    mark("sync up")
+    return 1
+
+def test_one(sync_fix):
+    mark("one body")
+
+def test_two(sync_fix):
+    mark("two body")
+""" % scope})
+        agent.calls.clear()
+        r = run(suite, "-o", "asyncio_mode=strict", f)
+        r.assert_outcomes(passed=2)
+        assert agent.log() == ["claim ."] + loop + [
+            "begin %s::test_one" % f, "sync up", "one body", "end %s::test_one passed" % f,
+            "begin %s::test_two" % f, "sync up", "two body", "end %s::test_two passed" % f], (f, agent.log())
+
+
+# A plugin of the suite's own that runs a coroutine fixture pytest-asyncio
+# leaves alone, as anyio's and pytest-trio's plugins do.
+OTHER_RUNNER = """
+import asyncio
+import inspect
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_fixture_setup(fixturedef, request):
+    func = fixturedef.func
+    if not inspect.iscoroutinefunction(func):
+        return (yield)
+    fixturedef.func = lambda **kw: asyncio.run(func(**kw))
+    try:
+        return (yield)
+    finally:
+        fixturedef.func = func
+"""
+
+
+def test_a_fixture_pytest_asyncio_does_not_run_sets_no_event_loop_up(suite, agent):
+    # pytest-asyncio requests no loop for a coroutine fixture without its
+    # mark in strict mode, which another plugin runs: strict as
+    # pytest-asyncio reads it, its --asyncio-mode option, else its
+    # asyncio_mode setting. No loop is set up for it, even at a session
+    # default loop scope.
+    if asyncio_version() < (0, 24):
+        pytest.skip("pytest-asyncio 0.23 has no loop scope setting")
+    suite.makeconftest(session_loop_mark() + OTHER_RUNNER)
+    suite.makepyfile(test_a="""
+import pytest
+from markhelp import mark
+
+@pytest.fixture
+async def coro():
+    mark("coro up")
+    return 1
+
+def test_a(coro):
+    mark("body")
+""")
+    for mode in (("-o", "asyncio_mode=strict"), ("-o", "asyncio_mode=auto", "--asyncio-mode=strict")):
+        agent.calls.clear()
+        r = run(suite, "-o", "asyncio_default_fixture_loop_scope=session", *mode)
+        r.assert_outcomes(passed=1)
+        assert agent.log() == ["claim .", "begin test_a.py::test_a", "coro up", "body", "end test_a.py::test_a passed"], (
+            mode, agent.log())
 
 
 def test_an_async_fixture_without_pytest_asyncio_begins_as_any_other(suite, agent):

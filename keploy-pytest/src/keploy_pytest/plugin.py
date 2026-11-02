@@ -28,14 +28,14 @@ process at a time, and refuses a second):
     its teardown with keploy's text.
 The fixtures of a wider scope a test reaches are read from pytest's own
 fixture graph as the test is set up: the test's fixture names, including
-those a plugin adds once the test is collected (pytest-asyncio's event loop
-runner), and each fixture's arguments, through any fixture that overrides
-another by its name. Three fixtures are set up by name from inside a test,
-outside that graph, and are followed too: pytest's
+those a plugin adds once the test is collected (pytest-asyncio's event loop,
+or its runner), and each fixture's arguments, through any fixture that
+overrides another by its name. Three fixtures are set up by name from inside
+a test, outside that graph, and are followed too: pytest's
 doctest_namespace, for a doctest; pytest-django's test database
 (django_db_setup), for the django_db marker and for live_server; and
-pytest-asyncio's event loop runner of an async fixture's loop scope, which it
-requests as it sets the fixture up.
+pytest-asyncio's event loop (0.24 to 0.26) or event loop runner (1.x) of the
+loop scope of a fixture it runs, which it requests as it sets the fixture up.
 A fixture of a wider scope that is still set up only once a test has begun
 (requested with request.getfixturevalue while the test runs, or one that
 only a function fixture of the same name reaches, def db(db)) would have its
@@ -148,25 +148,63 @@ def by_name(item, django):
 
 def is_async(func):
     """Whether a fixture's function is a coroutine or an async generator
-    function: one pytest-asyncio runs in an event loop runner."""
+    function."""
     return inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
 
 
-def asyncio_runner(fd, config):
-    """The fixture pytest-asyncio (1.x) requests by name as it sets up fd,
-    when fd is an async fixture (pytest_asyncio.plugin's
-    pytest_fixture_setup): the event loop runner of the fixture's loop scope,
-    _<loop scope>_scoped_runner, which is no argument of fd. The loop scope is
-    pytest-asyncio's own: the one pytest_asyncio.fixture gave the fixture,
-    else the asyncio_default_fixture_loop_scope setting, else the fixture's
-    scope. None for a fixture that is not async. Without that setting (no
-    pytest-asyncio, or 0.23, which gives an async fixture its loop as an
-    argument) the name is still returned, and names no fixture, so the walk
-    passes it by."""
-    if not is_async(fd.func):
+def asyncio_plugin(config):
+    """pytest-asyncio's plugin (the module pytest_asyncio.plugin), when it is
+    registered, else None."""
+    for p in config.pluginmanager.get_plugins():
+        if getattr(p, "__name__", None) == "pytest_asyncio.plugin":
+            return p
+    return None
+
+
+def asyncio_strict(config):
+    """Whether pytest-asyncio runs in strict mode, read as pytest-asyncio
+    reads it: its --asyncio-mode option, else its asyncio_mode setting."""
+    mode = config.getoption("asyncio_mode", None)
+    if mode is None:
+        mode = config.getini("asyncio_mode")
+    return mode == "strict"
+
+
+def asyncio_loop(fd, request, plugin):
+    """The fixture pytest-asyncio (plugin, None when it is not loaded)
+    requests by name as it sets fd up, outside fd's arguments, or None.
+    request is the test's request. It is pytest-asyncio's own rule:
+      - 0.24 to 0.26 put a wrapper in place of each async fixture they run
+        when they collect it, and keep those fixtures in a set of their own
+        (_HOLDER). As the wrapper sets such a fixture up, it requests the
+        event loop that pytest-asyncio's own
+        _get_event_loop_fixture_id_for_async_fixture names, from the loop
+        scope it resolved for the fixture as it wrapped it: event_loop for
+        the function loop scope, else the loop of the test's collector of
+        that scope (_session_event_loop, <module>::<event_loop>...). That
+        set and that function, called with the fixture's own function as the
+        wrapper calls it, are read here. Any other fixture (a sync one marked with
+        pytest_asyncio.fixture included) is run as it is, and requests no
+        loop.
+      - 1.x requests, for a fixture marked with pytest_asyncio.fixture
+        (an async or a sync one), and, outside strict mode, for any
+        coroutine or async generator function, the event loop runner of
+        the fixture's loop scope, _<loop scope>_scoped_runner: the loop
+        scope pytest_asyncio.fixture gave the fixture, else the
+        asyncio_default_fixture_loop_scope setting, else the fixture's
+        scope.
+      - 0.23 gives an async fixture its loop as an argument when it
+        collects it, inside pytest's graph, and has no runner: the runner's
+        name names no fixture there, and the walk passes it by."""
+    if plugin is None:
+        return None
+    loop_id = getattr(plugin, "_get_event_loop_fixture_id_for_async_fixture", None)
+    if loop_id is not None:
+        return loop_id(request, fd.func.__wrapped__) if fd in plugin._HOLDER else None
+    if not getattr(fd.func, "_force_asyncio_fixture", False) and (asyncio_strict(request.config) or not is_async(fd.func)):
         return None
     try:
-        default = config.getini("asyncio_default_fixture_loop_scope")
+        default = request.config.getini("asyncio_default_fixture_loop_scope")
     except ValueError:
         default = None
     return "_%s_scoped_runner" % (getattr(fd.func, "_loop_scope", None) or default or fd.scope)
@@ -276,6 +314,8 @@ class KeployScope:
         self.dir = ""
         # Whether pytest-django is loaded.
         self.django = False
+        # pytest-asyncio's plugin, when it is loaded.
+        self.asyncio = None
         # The open test, while one is.
         self.window = None
         # Why no test of this process can run judged: a refused
@@ -289,6 +329,7 @@ class KeployScope:
     @pytest.hookimpl(tryfirst=True)
     def pytest_sessionstart(self, session):
         self.django = has_pytest_django(session.config)
+        self.asyncio = asyncio_plugin(session.config)
         if xdist_controller(session.config):
             # The controller runs no test, and claims nothing: each worker
             # claims for itself.
@@ -350,7 +391,7 @@ class KeployScope:
         # begins, the ones a plugin added to its names since pytest sorted
         # them included: their calls belong to the test process.
         names = list(item.fixturenames) + by_name(item, self.django)
-        for name in wider_reached(names, defs_lookup(item), lambda fd: asyncio_runner(fd, item.config)):
+        for name in wider_reached(names, defs_lookup(item), lambda fd: asyncio_loop(fd, request, self.asyncio)):
             request.getfixturevalue(name)
         self.begun.add(tid)
         try:
