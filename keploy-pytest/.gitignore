@@ -1,0 +1,5 @@
+# The repository's root .gitignore leaves out every folder named tests and
+# every conftest.py (the old SDK's local files): this package's rows and its
+# e2e suite are such files, and are kept.
+!tests
+!conftest.py

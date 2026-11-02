@@ -1,0 +1,76 @@
+name: keploy-pytest
+
+on:
+  pull_request:
+    paths:
+      - "keploy-pytest/**"
+      - ".github/workflows/pytest-sdk.yml"
+  push:
+    branches: [main]
+    paths:
+      - "keploy-pytest/**"
+      - ".github/workflows/pytest-sdk.yml"
+  # publish-keploy-pytest.yml runs these rows and the e2e lane on a release
+  # tag before it publishes.
+  workflow_call:
+
+jobs:
+  rows:
+    name: rows (Python ${{ matrix.python }}, pytest ${{ matrix.pytest }})
+    runs-on: ubuntu-latest
+    strategy:
+      # One leg failing must not cancel the others: each leg's result is its
+      # own.
+      fail-fast: false
+      matrix:
+        # The oldest pytest this plugin supports (pyproject.toml) on the
+        # oldest Python it supports, the last pytest 8, and pytest 9 on the
+        # newest Python. pytest-asyncio 1.4 needs Python 3.10 and pytest 8.4:
+        # the 3.9 leg runs the 0.23 line. The 3.11 leg runs 0.26, of the
+        # line that requests an async fixture's event loop by name (0.24 to
+        # 1.0), which needs pytest 8.2 to 8.x. 1.1 and later run fixtures in
+        # event loop runners.
+        include:
+          - { python: "3.9", pytest: "8.0.2", pytest-django: "4.11.1", django: "4.2.30", pytest-asyncio: "0.23.8" }
+          - { python: "3.11", pytest: "8.3.5", pytest-django: "4.11.1", django: "5.2.18", pytest-asyncio: "0.26.0" }
+          - { python: "3.12", pytest: "8.4.2", pytest-django: "4.14.0", django: "5.2.18", pytest-asyncio: "1.4.1.post1" }
+          - { python: "3.14", pytest: "9.2.0", pytest-django: "4.14.0", django: "6.1.2", pytest-asyncio: "1.4.1.post1" }
+    defaults:
+      run:
+        working-directory: keploy-pytest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e . "pytest==${{ matrix.pytest }}" "pytest-xdist==3.8.0" "pytest-django==${{ matrix.pytest-django }}" "django==${{ matrix.django }}" "pytest-asyncio==${{ matrix.pytest-asyncio }}"
+      - run: python -m pytest -p no:cacheprovider tests
+
+  e2e:
+    # e2e/lane.sh: this commit's package, built as a wheel and installed into
+    # a small pytest suite, run under keploy mock record with its provider
+    # up, then keploy mock replay with the provider stopped; a test whose
+    # call has no recorded answer, and one that no longer makes its recorded
+    # call, error with keploy's text; a quarantined test is skipped with
+    # keploy's reason.
+    name: e2e (keploy mock record and replay)
+    runs-on: ubuntu-latest
+    # The lane takes a few minutes, pip installs included: a run past 15 is a hang.
+    timeout-minutes: 15
+    env:
+      # keploy's enterprise build, which judges each test under
+      # KEPLOY_PROVEN=1. Pinned, and checked against its digest, so that a
+      # new keploy release cannot change this job's result unseen.
+      KEPLOY_VERSION: "3.8.106"
+      KEPLOY_SHA256: "2c4c9bcf0a703b65827d1cee5ca88fe9d7856844a08cac368b42b83345fef3ce"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: install keploy ${{ env.KEPLOY_VERSION }}
+        run: |
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/keploy" "https://keploy.io/ent/dl/$KEPLOY_VERSION/enterprise_linux_amd64"
+          echo "$KEPLOY_SHA256  $RUNNER_TEMP/keploy" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/keploy"
+      - run: KEPLOY_BIN="$RUNNER_TEMP/keploy" bash keploy-pytest/e2e/lane.sh
