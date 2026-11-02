@@ -725,6 +725,28 @@ def test_items_that_use_no_fixtures_are_not_judged_and_named_at_the_end(suite, a
     r.stdout.fnmatch_lines(["*= keploy: 1 item(s) not judged by keploy =*"])
 
 
+def test_the_end_lists_count_every_name(suite, agent):
+    # Two tests set aside and two items not judged: each header counts them
+    # all, in-process and through the xdist controller.
+    agent.script["/agent/scope/begin"] = lambda body, n: ok(action="skip", reason="set aside by a row")
+    suite.makeconftest(CUSTOM)
+    (suite.path / "a.spec").write_text("x\n")
+    (suite.path / "b.spec").write_text("x\n")
+    suite.makepyfile(test_a="def test_a():\n    pass\n\ndef test_b():\n    pass\n")
+    for args in ((), ("-n", "1")):
+        r = run(suite, *args)
+        r.assert_outcomes(passed=2, skipped=2)
+        r.stdout.fnmatch_lines([
+            "*= keploy: 2 test(s) set aside, skipped =*",
+            "test_a.py::test_a: keploy: set aside by a row",
+            "test_a.py::test_b: keploy: set aside by a row",
+            "*= keploy: 2 item(s) not judged by keploy =*",
+            "they use no pytest fixtures, so keploy-pytest cannot begin or end them; their calls are the test process's:",
+            "a.spec::spec1",
+            "b.spec::spec1",
+        ])
+
+
 CUSTOM = """
 import pytest
 from markhelp import mark
