@@ -2,11 +2,12 @@
 
 keploy_agent sets a global tracer and starts a non-daemon thread when it is
 imported, so each case runs here, in a child of the test, and ends with
-os._exit. The import binds the agent's real control socket path
-(/tmp/coverage_control.sock): do not run these rows while keploy is running
-on the same machine.
+os._exit. The import binds the agent's control socket: here at the case's own
+path (import_agent), never /tmp/coverage_control.sock, which a
+Keploy-instrumented app on the same machine may be serving.
 
-argv[1] is the case as JSON:
+argv[1] is the case as JSON, with "sock", the control socket path the import
+binds, and one of:
   {"mode": "answers", "steps": [...]}
       Imports keploy_agent, then runs each step on a socketpair through
       keploy_agent._handle. A step is one of:
@@ -34,7 +35,27 @@ case = json.loads(sys.argv[1])
 out = {}
 
 
-SOCK = "/tmp/coverage_control.sock"
+SOCK = case["sock"]
+
+# The line of keploy_agent that names its control socket.
+SOCK_LINE = 'CONTROL_SOCK = "/tmp/coverage_control.sock"'
+
+
+def import_agent():
+    """Imports keploy_agent as an app does, from its source with SOCK_LINE
+    alone changed to name SOCK, so the import binds SOCK."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("keploy_agent")
+    src = spec.loader.get_source("keploy_agent")
+    if src.count(SOCK_LINE) != 1:
+        raise SystemExit(f"keploy_agent does not have the line {SOCK_LINE!r} once")
+    src = src.replace(SOCK_LINE, f"CONTROL_SOCK = {SOCK!r}")
+    ka = importlib.util.module_from_spec(spec)
+    sys.modules["keploy_agent"] = ka
+    exec(compile(src, spec.origin, "exec"), ka.__dict__)
+    out["sock"] = ka.CONTROL_SOCK
+    return ka
 
 
 def finish():
@@ -52,7 +73,7 @@ def finish():
 
 
 def answers():
-    import keploy_agent as ka
+    ka = import_agent()
 
     emitted = []
 
@@ -125,7 +146,7 @@ def bind_before_ready():
     start = threading.Thread.start
     threading.Thread.start = lambda self: held.append(self)
     try:
-        import keploy_agent as ka
+        ka = import_agent()
     finally:
         threading.Thread.start = start
     c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -164,7 +185,7 @@ def bind_fails():
     socket.socket.listen = listen
     socket.socket.close = record_close
     try:
-        import keploy_agent as ka
+        ka = import_agent()
     except BaseException as e:
         out["import_error"] = repr(e)
         return

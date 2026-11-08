@@ -4,8 +4,10 @@ returns, and every command read gets one answer line before the close."""
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -17,18 +19,30 @@ IGNORED = "IGNORED proto=2\n"
 
 
 def run_case(case, tmp_path):
-    """Run one case in a child process; return what it saw and its log."""
+    """Run one case in a child process; return what it saw and its log.
+
+    The child's import binds the control socket in a directory of this case's
+    own, never /tmp/coverage_control.sock, which a Keploy-instrumented app on
+    the same machine may be serving. The directory is a short one: a Unix
+    socket path is limited to about 100 bytes, which tmp_path can pass."""
+    sock_dir = tempfile.mkdtemp(prefix="kc")
+    sock = os.path.join(sock_dir, "c.sock")
     env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
     env.pop("KEPLOY_APP_SOURCE_DIR", None)
-    # subprocess.run kills the child if it outlives the timeout.
-    p = subprocess.run(
-        [sys.executable, str(DRIVER), json.dumps(case)],
-        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
-    )
+    try:
+        # subprocess.run kills the child if it outlives the timeout.
+        p = subprocess.run(
+            [sys.executable, str(DRIVER), json.dumps(dict(case, sock=sock))],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+        )
+    finally:
+        shutil.rmtree(sock_dir, ignore_errors=True)
     assert p.returncode == 0, p.stderr
     lines = p.stdout.strip().splitlines()
     assert lines, p.stderr
-    return json.loads(lines[-1]), p.stderr
+    got = json.loads(lines[-1])
+    assert got.get("sock") == sock, p.stderr
+    return got, p.stderr
 
 
 def send(cmd):
