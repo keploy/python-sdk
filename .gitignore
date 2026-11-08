@@ -441,8 +441,5 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/linux,macos,jetbrains,visualstudiocode,python,django,windows
 
-.github
 .vscode
 demo_file.py
-tests
-conftest.py
