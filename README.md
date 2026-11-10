@@ -6,14 +6,6 @@ The Keploy Python Coverage Agent is a lightweight, sidecar module designed to in
 
 Follow these steps to integrate the coverage agent into your Python project.
 
-### Prerequisites
-
-You must have the `coverage` library installed in your project's Python environment.
-
-```bash
-pip install coverage
-```
-
 ### Step 1: Install the Agent
 
 Install the `keploy-agent` package from PyPI into your virtual environment:

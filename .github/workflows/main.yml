@@ -1,31 +1,62 @@
 name: Deploy to PyPI
 
+# Publishes keploy-agent, the repository's root package, to PyPI when a
+# GitHub release is created, by trusted publishing: PyPI takes this
+# workflow's OpenID Connect identity in place of a token, so the repository
+# holds no PyPI secret for it.
+#
+# To release X.Y.Z: set version = "X.Y.Z" in pyproject.toml on main (a pull
+# request, so keploy-agent.yml's package job checks the build), then create a
+# GitHub release with the tag keploy-agent-vX.Y.Z on that commit.
+#
+# A release with any other tag fails here in one line, before anything is
+# built, and uploads nothing. scripts/check_package.sh is the check, the one
+# the pull request ran: the tag, one wheel and one sdist of that version,
+# twine's metadata check, and a wheel that installs and imports in a clean
+# venv. PyPI itself refuses a version it already has.
+#
+# PyPI accepts the upload only from a trusted publisher it knows: the project
+# keploy-agent, owner keploy, repository python-sdk, workflow main.yml,
+# environment pypi. Until that is set on PyPI the publish step fails and
+# uploads nothing. Every action here is pinned by commit: this job can mint
+# the identity PyPI trusts.
 on:
   release:
     types:
       - created
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
+    name: publish keploy-agent to PyPI
     runs-on: ubuntu-latest
-
+    # A minute's work: a run past 10 is a hang.
+    timeout-minutes: 10
+    # The trusted publisher on PyPI names this environment.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/keploy-agent
+    permissions:
+      contents: read
+      id-token: write # trusted publishing: PyPI takes this run's identity
+    defaults:
+      run:
+        shell: bash # -eo pipefail: a failed command before a pipe fails the step
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.x
-
-    - name: Install build dependencies
-      run: python -m pip install --upgrade build
-
-    - name: Build package
-      run: python -m build
-
-    - name: Publish package to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        user: __token__
-        password: ${{ secrets.PYPI_API_TOKEN }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          # The Python keploy-agent.yml's package job builds with.
+          python-version: "3.14"
+      - name: The tag names the version, and the build passes the pull request's checks
+        env:
+          # Read from the environment, never pasted into the script: a tag
+          # name is text someone else chose.
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: scripts/check_package.sh "$RELEASE_TAG"
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
