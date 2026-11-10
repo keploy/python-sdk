@@ -6,6 +6,8 @@ on:
       - "src/**"
       - "tests/**"
       - "pyproject.toml"
+      - "README.md"
+      - "LICENSE"
       - ".github/workflows/keploy-agent.yml"
   push:
     branches: [main]
@@ -13,6 +15,8 @@ on:
       - "src/**"
       - "tests/**"
       - "pyproject.toml"
+      - "README.md"
+      - "LICENSE"
       - ".github/workflows/keploy-agent.yml"
 
 jobs:
@@ -53,3 +57,44 @@ jobs:
           python-version: "3.14"
       - run: python -m pip install "ruff==0.14.4"
       - run: ruff check --select F,E9 src tests
+
+  package:
+    # The build main.yml publishes on a GitHub release, with no upload: one
+    # wheel and one sdist of keploy-agent, metadata PyPI can render
+    # (README.md is the project page), and a wheel that installs and imports
+    # from outside the checkout.
+    name: package (build, no upload)
+    runs-on: ubuntu-latest
+    # A minute's work: a run past 10 is a hang.
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash # -eo pipefail: a failed command before a pipe fails the step
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+      - run: python -m pip install build==1.6.1 twine==7.0.0
+      - run: python -m build --outdir dist .
+      - name: One wheel and one sdist, of the version pyproject.toml names
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          ls dist
+          test "$(ls dist | sort | tr '\n' ' ')" = "keploy_agent-$version-py3-none-any.whl keploy_agent-$version.tar.gz "
+      - name: The metadata renders on PyPI
+        run: python -m twine check --strict dist/*
+      - name: The wheel installs and the agent imports
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/venv/bin/python" - <<'EOF'
+          import os
+          import keploy_agent
+          where = os.path.realpath(keploy_agent.__file__)
+          print(where, flush=True)
+          ok = where.startswith(os.path.realpath(os.environ["RUNNER_TEMP"]) + os.sep)
+          # The agent's control thread is not a daemon: leave without it.
+          os._exit(0 if ok else 1)
+          EOF

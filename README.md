@@ -16,10 +16,16 @@ pip install coverage
 
 ### Step 1: Install the Agent
 
-Install the `keploy-agent` package into your virtual environment. If you are developing the agent, you can install it in an editable mode from its source directory:
+Install the `keploy-agent` package from PyPI into your virtual environment:
 
 ```bash
-pip install -e /path/to/keploy_agent
+pip install keploy-agent
+```
+
+If you are developing the agent, install it in editable mode from a checkout of this repository instead:
+
+```bash
+pip install -e /path/to/python-sdk
 ```
 
 ### Step 2: Integrate into Your Application
