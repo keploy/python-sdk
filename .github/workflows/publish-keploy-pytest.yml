@@ -22,10 +22,11 @@ name: keploy-pytest publish
 # the rows' included, is pinned by commit: the publish job can mint the
 # identity PyPI trusts.
 #
-# Push keploy-pytest-vX.Y.Z as a plain git tag, never as a GitHub release: a
-# created GitHub release also starts main.yml, which builds and publishes the
-# repository's root package under this tag. keploy-pytest/README.md,
-# "Releasing", says the same.
+# Push keploy-pytest-vX.Y.Z as a plain git tag, not as a GitHub release: a
+# created GitHub release also starts main.yml, which publishes the
+# repository's root package, keploy-agent, only from a keploy-agent-vX.Y.Z
+# tag. Under this tag it fails, saying so, and uploads nothing.
+# keploy-pytest/README.md, "Releasing", says the same.
 #
 # On every pull request the same build is checked with no upload: the
 # version check, twine's metadata check, and the plugin's files and entry

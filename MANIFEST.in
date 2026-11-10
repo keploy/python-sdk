@@ -1,0 +1,3 @@
+# setuptools ships tests/test*.py by default; the tests also need their
+# driver.
+recursive-include tests *.py
