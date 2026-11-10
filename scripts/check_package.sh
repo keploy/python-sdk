@@ -53,8 +53,13 @@ fi
 
 python -m twine check --strict dist/*
 
+# Nothing listed is nothing checked: git that cannot list is refused too.
+tracked=$(git ls-files tests 2>/dev/null || true)
+if [ -z "$tracked" ]; then
+  fail "git lists no tracked file under tests/, so the sdist's tests cannot be checked"
+fi
 tar -tzf "dist/$sdist" > dist.files
-for f in $(git ls-files tests); do
+for f in $tracked; do
   if ! grep -qxF "keploy_agent-$version/$f" dist.files; then
     rm -f dist.files
     fail "the sdist ships tests/ without $f"
