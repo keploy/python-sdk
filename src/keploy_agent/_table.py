@@ -43,6 +43,9 @@ MAX_FRAME = 1 << 20
 MAX_PAYLOAD = MAX_FRAME - 8 - 1024
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
+# The real socket class; the agent sets it to its saved original (gevent).
+SOCKET = socket.socket
+
 
 def runtime() -> str:
     return f"python {sys.version_info[0]}.{sys.version_info[1]}"
@@ -205,7 +208,7 @@ def frames(part: str, build: str, payload: bytes):
 def send_frame(data_sock: str, body: bytes, timeout: float = 60.0) -> None:
     """Send one frame on a connection of its own and wait for the agent's
     OK: the next frame goes only once this one is held."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+    with SOCKET(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
         s.connect(data_sock)
         s.sendall(FRAME_MAGIC + struct.pack(">I", len(body)) + body)

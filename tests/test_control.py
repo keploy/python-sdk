@@ -25,23 +25,35 @@ def run_case(case, tmp_path):
     own, never /tmp/coverage_control.sock, which a Keploy-instrumented app on
     the same machine may be serving. The directory is a short one: a Unix
     socket path is limited to about 100 bytes, which tmp_path can pass."""
-    sock_dir = tempfile.mkdtemp(prefix="kc")
-    sock = os.path.join(sock_dir, "c.sock")
-    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
+    top = tempfile.mkdtemp(prefix="kc")
+    sock_dir = os.path.join(top, "ctl")
+    # keploy's run dir, as keploy makes it.
+    os.mkdir(sock_dir)
+    os.chmod(sock_dir, 0o1777)
+    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"), KEPLOY_COVERAGE_CONTROL_DIR=sock_dir)
+    env.pop("KEPLOY_AGENT_FIRST_PID", None)
     env.pop("KEPLOY_APP_SOURCE_DIR", None)
     try:
         # subprocess.run kills the child if it outlives the timeout.
         p = subprocess.run(
-            [sys.executable, str(DRIVER), json.dumps(dict(case, sock=sock))],
+            [sys.executable, str(DRIVER), json.dumps(dict(case, sock_dir=sock_dir))],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
         )
     finally:
-        shutil.rmtree(sock_dir, ignore_errors=True)
+        shutil.rmtree(top, ignore_errors=True)
     assert p.returncode == 0, p.stderr
     lines = p.stdout.strip().splitlines()
     assert lines, p.stderr
     got = json.loads(lines[-1])
-    assert got.get("sock") == sock, p.stderr
+    # The process's own socket: <its pid>.sock in the dir keploy names
+    # ("" when it could not bind one).
+    if case.get("mode") != "bind_fails":
+        assert os.path.dirname(got.get("sock") or "") == sock_dir, p.stderr
+        # <pid namespace inode>-<pid>.sock
+        ns, _, pid = os.path.basename(got["sock"])[:-5].partition("-")
+        assert ns.isdigit() and pid.isdigit(), p.stderr
+    else:
+        assert got["sock"] == "", p.stderr
     return got, p.stderr
 
 
@@ -135,14 +147,15 @@ def test_socket_is_bound_when_the_import_returns(tmp_path):
     # socket file an earlier app left at the path is replaced.
     got, log = run_case({"mode": "bind_before_ready"}, tmp_path)
     assert "connect_error" not in got, log
-    assert got["held"] == ["KeployBuild", "KeployControlServer"], log
+    assert got["held"] == ["keploy:_server", "keploy:_build"], log
     assert got["answer"] == TAKEN, log
 
 
 def test_a_socket_that_cannot_be_bound_is_said_and_the_import_goes_on(tmp_path):
     got, log = run_case({"mode": "bind_fails"}, tmp_path)
     assert "import_error" not in got, log
-    assert got["closed"] == 1, log
+    # The bind, and its retry under another name: each socket closed.
+    assert got["closed"] == 2, log
     assert got["srv"] is False, log
     assert "KeployControlServer" not in got["threads"], log
     assert "Could not start the Keploy control server" in log

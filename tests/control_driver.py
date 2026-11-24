@@ -35,28 +35,30 @@ case = json.loads(sys.argv[1])
 out = {}
 
 
-SOCK = case["sock"]
+# The dir of the control sockets (KEPLOY_COVERAGE_CONTROL_DIR, set by the
+# test): this process binds <its pid>.sock there.
+SOCK_DIR = case["sock_dir"]
+_ns = os.readlink("/proc/self/ns/pid")
+SOCK = os.path.join(SOCK_DIR, f"{_ns[_ns.find('[') + 1:_ns.rfind(']')]}-{os.getpid()}.sock")
 
-# The lines of keploy_agent that name its control and data sockets.
-SOCK_LINE = 'CONTROL_SOCK = "/tmp/coverage_control.sock"'
+# The line of keploy_agent that names its data socket.
 DATA_LINE = 'DATA_SOCK = "/tmp/coverage_data.sock"'
 # The data socket: never /tmp/coverage_data.sock, a keploy agent's on a
 # machine that runs one. No one listens here unless a case starts a receiver.
-DATA = case.get("data") or SOCK + ".data"
+DATA = case.get("data") or os.path.join(os.path.dirname(SOCK_DIR), "data.sock")
 
 
 def import_agent():
-    """Imports keploy_agent as an app does, from its source with SOCK_LINE
-    and DATA_LINE alone changed to name SOCK and DATA, so the import binds
-    SOCK and sends to DATA."""
+    """Imports keploy_agent as an app does, from its source with DATA_LINE
+    alone changed to name DATA, so the import binds SOCK (in SOCK_DIR, by
+    its environment) and sends to DATA."""
     import importlib.util
 
     spec = importlib.util.find_spec("keploy_agent")
     src = spec.loader.get_source("keploy_agent")
-    for line, path, name in ((SOCK_LINE, SOCK, "CONTROL_SOCK"), (DATA_LINE, DATA, "DATA_SOCK")):
-        if src.count(line) != 1:
-            raise SystemExit(f"keploy_agent does not have the line {line!r} once")
-        src = src.replace(line, f"{name} = {path!r}")
+    if src.count(DATA_LINE) != 1:
+        raise SystemExit(f"keploy_agent does not have the line {DATA_LINE!r} once")
+    src = src.replace(DATA_LINE, f"DATA_SOCK = {DATA!r}")
     ka = importlib.util.module_from_spec(spec)
     sys.modules["keploy_agent"] = ka
     exec(compile(src, spec.origin, "exec"), ka.__dict__)
@@ -102,7 +104,7 @@ def answers():
     for step in case["steps"]:
         stub = step.get("stub")
         if stub == "reset_fails":
-            ka._collector.reset = reset_fails
+            ka._collector.swap = reset_fails
         elif stub == "emit_fails":
             ka._emit = emit_fails
         elif stub == "emit_ok":
@@ -139,7 +141,10 @@ def answers():
 
 
 def bind_before_ready():
-    # A socket file left by an app that ended: the import replaces it.
+    # A socket file left by an app that ended: the import replaces it. The
+    # dir is made as the agent makes it (1777).
+    os.makedirs(SOCK_DIR, exist_ok=True)
+    os.chmod(SOCK_DIR, 0o1777)
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         os.remove(SOCK)
@@ -147,22 +152,27 @@ def bind_before_ready():
         pass
     stale.bind(SOCK)
     stale.close()
+    # The agent's threads are real OS threads (_thread, never gevent's):
+    # hold every one the import starts.
+    import _thread
     held = []
-    start = threading.Thread.start
-    threading.Thread.start = lambda self: held.append(self)
+    start = _thread.start_new_thread
+    _thread.start_new_thread = lambda fn, args, *kw: held.append((fn, args))
     try:
         ka = import_agent()
     finally:
-        threading.Thread.start = start
+        _thread.start_new_thread = start
     c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         c.connect(ka.CONTROL_SOCK)
     except OSError as e:
         out["connect_error"] = repr(e)
         return
-    out["held"] = [t.name for t in held]
-    for t in held:
-        t.start()
+    out["held"] = [fn.__name__ for fn, _ in held]
+    # The agent saved the holder as its thread starter: give it the real one.
+    ka._start_new_thread = start
+    for fn, args in held:
+        start(fn, args)
     c.settimeout(10)
     c.sendall(b"START t1\n")
     reply = b""
@@ -195,8 +205,9 @@ def bind_fails():
         out["import_error"] = repr(e)
         return
     out["closed"] = len(closed)
-    out["srv"] = hasattr(ka, "_srv")
+    out["srv"] = getattr(ka, "_srv", None) is not None
     out["threads"] = [t.name for t in threading.enumerate()]
+    out["server_thread"] = getattr(ka, "_srv", None) is not None
 
 
 try:

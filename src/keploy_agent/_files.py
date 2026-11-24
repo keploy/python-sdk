@@ -193,9 +193,27 @@ class AppFiles:
             return None
         if self._library_dir(os.path.dirname(p)):
             return None
-        if any(fnmatch.fnmatchcase(rel, g) for g in self.excludes):
+        if self.excluded(rel):
             return None
         return rel
+
+    def excluded(self, rel: str) -> bool:
+        """Whether an exclude glob takes rel (a file or a dir), or a dir it
+        is in: one rule for the walk's pruning and for rel()."""
+        if not self.excludes:
+            return False
+        parts = rel.split("/")
+        for i in range(1, len(parts) + 1):
+            p = "/".join(parts[:i])
+            for g in self.excludes:
+                if fnmatch.fnmatchcase(p, g) or (i < len(parts) and fnmatch.fnmatchcase(p + "/", g)):
+                    return True
+        return False
+
+    def _dir_excluded(self, reldir: str) -> bool:
+        # The checks excluded() makes of a file's ancestors, for this dir:
+        # true exactly when every file below it is excluded.
+        return self.excluded(reldir + "/")
 
     def walk(self) -> list[str]:
         """Every app file under the root, as sorted relative paths. Raises
@@ -213,10 +231,14 @@ class AppFiles:
                     f"more than {MAX_ENTRIES} entries under {self.root}: "
                     "set KEPLOY_APP_SOURCE_DIR to the app's own source dir")
             real = os.path.realpath(d)
+            reldir = "" if real == self.root else real[len(self.prefix):].replace(os.sep, "/") + "/"
             dirs[:] = sorted(
                 x for x in dirs if not _skip_dir(x)
                 and not self._holds_library(os.path.join(d, x))
-                and not any(_under(os.path.realpath(os.path.join(real, x)), lib) for lib in self.libs))
+                and not any(_under(os.path.realpath(os.path.join(real, x)), lib) for lib in self.libs)
+                # A dir an exclude glob takes (media, media/*, */migrations)
+                # is not walked, as rel() takes none of its files.
+                and not self._dir_excluded(reldir + x))
             for f in files:
                 if not f.endswith(".py"):
                     continue
