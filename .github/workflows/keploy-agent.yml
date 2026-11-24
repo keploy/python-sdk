@@ -36,12 +36,18 @@ jobs:
       # own.
       fail-fast: false
       matrix:
-        # The oldest Python the agent runs on (it uses Path.is_relative_to,
-        # new in 3.9) and the newest. pytest 9 needs Python 3.10.
+        # Every Python the agent runs on, as each measures another way:
+        # 3.9 (line numbers from co_lnotab, settrace), 3.10 (co_lines,
+        # qualnames built by hand), 3.11 (settrace, co_qualname), 3.12 to
+        # 3.14 (sys.monitoring). pytest 9 needs Python 3.10.
         # actions/setup-python has no Python 3.9 build for ubuntu-latest
         # (Ubuntu 26.04), so the 3.9 leg runs on ubuntu-24.04.
         include:
           - { python: "3.9", pytest: "8.4.2", os: ubuntu-24.04 }
+          - { python: "3.10", pytest: "9.2.0", os: ubuntu-latest }
+          - { python: "3.11", pytest: "9.2.0", os: ubuntu-latest }
+          - { python: "3.12", pytest: "9.2.0", os: ubuntu-latest }
+          - { python: "3.13", pytest: "9.2.0", os: ubuntu-latest }
           - { python: "3.14", pytest: "9.2.0", os: ubuntu-latest }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

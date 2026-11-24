@@ -7,11 +7,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keploy-agent"
-version = "0.1.1"
+version = "0.2.0"
 authors = [
   { name="Keploy Team", email="hello@keploy.io" },
 ]
-description = "A side-effect agent for collecting Python code coverage during Keploy test runs."
+description = "Per-test code coverage of a Python app for Keploy's dedup and code coverage (keploy test --dedup)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"

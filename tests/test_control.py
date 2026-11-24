@@ -92,14 +92,33 @@ ANSWER_ROWS = {
 }
 
 
+def word(answer):
+    """An answer's word and proto: an IGNORED answer may name why after them."""
+    return " ".join(answer.split()[:2]) + "\n" if answer else answer
+
+
 @pytest.mark.parametrize("name", sorted(ANSWER_ROWS))
 def test_answers(name, tmp_path):
     steps, answers, emitted, current = ANSWER_ROWS[name]
     got, log = run_case({"mode": "answers", "steps": steps}, tmp_path)
     assert got["errors"] == [], log
-    assert got["answers"] == answers, log
+    assert [word(a) for a in got["answers"]] == answers, log
+    for a in got["answers"]:
+        assert a in ("", TAKEN) or a.startswith("IGNORED proto=2"), a
     assert got["emitted"] == emitted, log
     assert got["current_id"] == current, log
+
+
+def test_an_ignored_command_says_why(tmp_path):
+    got, log = run_case({"mode": "answers", "steps": [
+        send("START t1\n"), send("END t2\n"), send("PING t1\n"), send("START\n")]},
+        tmp_path)
+    assert got["answers"] == [
+        TAKEN,
+        "IGNORED proto=2 no window of t2 is open\n",
+        "IGNORED proto=2 unknown command 'PING'\n",
+        "IGNORED proto=2 START names no test\n",
+    ], log
 
 
 def test_a_read_that_fails_gets_no_answer_and_is_said(tmp_path):
@@ -116,7 +135,7 @@ def test_socket_is_bound_when_the_import_returns(tmp_path):
     # socket file an earlier app left at the path is replaced.
     got, log = run_case({"mode": "bind_before_ready"}, tmp_path)
     assert "connect_error" not in got, log
-    assert got["held"] == ["KeployControlServer"], log
+    assert got["held"] == ["KeployBuild", "KeployControlServer"], log
     assert got["answer"] == TAKEN, log
 
 

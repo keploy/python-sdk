@@ -37,20 +37,26 @@ out = {}
 
 SOCK = case["sock"]
 
-# The line of keploy_agent that names its control socket.
+# The lines of keploy_agent that name its control and data sockets.
 SOCK_LINE = 'CONTROL_SOCK = "/tmp/coverage_control.sock"'
+DATA_LINE = 'DATA_SOCK = "/tmp/coverage_data.sock"'
+# The data socket: never /tmp/coverage_data.sock, a keploy agent's on a
+# machine that runs one. No one listens here unless a case starts a receiver.
+DATA = case.get("data") or SOCK + ".data"
 
 
 def import_agent():
     """Imports keploy_agent as an app does, from its source with SOCK_LINE
-    alone changed to name SOCK, so the import binds SOCK."""
+    and DATA_LINE alone changed to name SOCK and DATA, so the import binds
+    SOCK and sends to DATA."""
     import importlib.util
 
     spec = importlib.util.find_spec("keploy_agent")
     src = spec.loader.get_source("keploy_agent")
-    if src.count(SOCK_LINE) != 1:
-        raise SystemExit(f"keploy_agent does not have the line {SOCK_LINE!r} once")
-    src = src.replace(SOCK_LINE, f"CONTROL_SOCK = {SOCK!r}")
+    for line, path, name in ((SOCK_LINE, SOCK, "CONTROL_SOCK"), (DATA_LINE, DATA, "DATA_SOCK")):
+        if src.count(line) != 1:
+            raise SystemExit(f"keploy_agent does not have the line {line!r} once")
+        src = src.replace(line, f"{name} = {path!r}")
     ka = importlib.util.module_from_spec(spec)
     sys.modules["keploy_agent"] = ka
     exec(compile(src, spec.origin, "exec"), ka.__dict__)
@@ -84,9 +90,8 @@ def answers():
         emitted.append(test_id)
         raise ConnectionRefusedError(111, "no data socket")
 
-    class FailingTracer:
-        def results(self):
-            raise RuntimeError("counts not reset")
+    def reset_fails():
+        raise RuntimeError("lines not reset")
 
     def run_raises(cmd):
         raise ValueError("run failed")
@@ -97,7 +102,7 @@ def answers():
     for step in case["steps"]:
         stub = step.get("stub")
         if stub == "reset_fails":
-            ka._tracer = FailingTracer()
+            ka._collector.reset = reset_fails
         elif stub == "emit_fails":
             ka._emit = emit_fails
         elif stub == "emit_ok":
